@@ -10,6 +10,7 @@ import SmsPage from './components/SmsPage';
 import MessageQueue from './components/MessageQueue';
 import LoginPage from './components/LoginPage';
 import Profile from './components/Profile';
+import RegisterPage from './components/RegisterPage';
 import { AuthProvider, useAuth } from './components/AuthContext';
 import { UnreadCountProvider, useUnreadCount } from './components/UnreadCount';
 import 'semantic-ui-css/semantic.min.css';
@@ -26,6 +27,7 @@ function App() {
         <ThemeProvider theme={theme}>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/register" element={<RegisterPage />} />
             <Route path="*" element={<AuthenticatedApp />} />
           </Routes>
         </ThemeProvider>

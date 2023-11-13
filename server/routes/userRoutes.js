@@ -2,10 +2,12 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
+const dotenv = require('dotenv');
 const router = express.Router();
 const crypto = require('crypto');
 const algorithm = 'aes-256-ctr';
 const secretKey = 'your-encryption-secret-key'; // You should use a .env variable for this
+const axios = require('axios');
 
 //===================== ENCRYPTION OF SIP CREDENTIALS =====================
 // Encryption and decryption utility functions
@@ -45,14 +47,33 @@ const authenticateUser = async (req, res, next) => {
 
 //===================== REGISTER ENDPOINT =====================
 // Register
+
+const generateRandomString = (length, type = 'alphanumeric') => {
+  const characters =
+    type === 'alphanumeric'
+      ? 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+      : 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()';
+  let result = '';
+  const charactersLength = characters.length;
+  for (let i = 0; i < length; i++) {
+    result += characters.charAt(Math.floor(Math.random() * charactersLength));
+  }
+  return result;
+};
+
 router.post('/register', async (req, res) => {
-  const { username, password, firstName, lastName, phoneNumber } = req.body;
+  const { firstName, lastName, phoneNumber, avatar, username, password } = req.body;
+
+  // Generate SIP credentials
+  const sipUsername = generateRandomString(Math.floor(Math.random() * 29) + 4);
+  const sipPassword = generateRandomString(Math.floor(Math.random() * 121) + 8);
+
   const salt = await bcrypt.genSalt(10);
   const hashedPassword = await bcrypt.hash(password, salt);
-  const { sipUsername, sipPassword } = req.body;
-  const encryptedSipPassword = encrypt(req.body.sipPassword);
+  const encryptedSipPassword = encrypt(sipPassword); // Assuming you have an encrypt function
 
   try {
+    // Create a new user
     const newUser = await User.create({
       username,
       password: hashedPassword,
@@ -61,14 +82,46 @@ router.post('/register', async (req, res) => {
       phoneNumber,
       sipUsername,
       sipPassword: encryptedSipPassword,
-      avatar: req.body.avatar ? req.body.avatar : null,
+      avatar: avatar || null,
       status: false
     });
-    res.status(200).json("User registered");
+
+    const profileName = `OVP_${sipUsername}`;
+      const profileData = {
+        name: profileName,
+        enabled: true
+      };
+  
+      const profileResponse = await axios.post('https://api.telnyx.com/v2/outbound_voice_profiles', profileData, {
+        headers: { 'Authorization': `Bearer ${dotenv.config().parsed.TELNYX_API}` }
+      });
+
+    if (profileResponse.status === 201) {
+    // Create SIP connection via Telnyx API
+    const connectionName = `SIPConnection_${sipUsername}`;
+    const connectionData = {
+      connection_name: connectionName,
+      user_name: sipUsername,
+      password: sipPassword,
+      webhook_event_url: `https://${dotenv.config().parsed.APP_HOST}:${dotenv.config().parsed.APP_PORT}/api/voice/outbound-webrtc-bridge`,
+      outbound: {
+        call_parking_enabled: true,
+        outbound_voice_profile_id: profileResponse.data.data.id      }
+    };
+
+    const credentialResponse = await axios.post('https://api.telnyx.com/v2/credential_connections', connectionData, {
+      headers: { 'Authorization': `Bearer ${dotenv.config().parsed.TELNYX_API}` }
+    });
+      
+      res.status(200).json("User registered with SIP connection");
+    } else {
+      res.status(500).json("Error creating SIP connection");
+    }
   } catch (err) {
-    res.status(500).json(err);
+    res.status(500).json(err.message);
   }
 });
+
 //===================== GET A AGENT ENDPOINT =====================
 // GET a user
 router.get('/user_data/:username', async (req, res) => {
