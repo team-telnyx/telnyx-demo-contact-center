@@ -131,8 +131,12 @@ router.get('/user_data/:username', async (req, res) => {
     const user = await User.findOne({ where: { username } });
 
     if (user) {
-      const { avatar, firstName, lastName, phoneNumber, status } = user;
-      res.status(200).json({ avatar, firstName, lastName, phoneNumber, status }); 
+      const { firstName, lastName, phoneNumber, status, avatar } = user;
+      let base64Avatar = '';
+      if (avatar) {
+        base64Avatar = `data:image/jpeg;base64,${avatar.toString('base64')}`;
+      }
+      res.status(200).json({ avatar: base64Avatar, firstName, lastName, phoneNumber, status }); 
     } else {
       res.status(404).json("User not found");
     }
@@ -208,8 +212,20 @@ router.put('/update/:username', async (req, res) => {
       if (firstName) user.firstName = firstName;
       if (lastName) user.lastName = lastName;
       if (phoneNumber) user.phoneNumber = phoneNumber;
-      if (avatar) user.avatar = avatar;
-
+      if (avatar) {
+        try {
+          const base64Data = avatar.split(",")[1];
+          if (base64Data) {
+            const buffer = Buffer.from(base64Data, 'base64');
+            user.avatar = buffer;
+          } else {
+            throw new Error('Base64 data is empty or not properly formatted');
+          }
+        } catch (err) {
+          console.error('Error processing avatar:', err.message);
+          return res.status(400).json({ error: 'Invalid avatar data' });
+        }
+      }
       await user.save();
 
       res.status(200).json("User updated");

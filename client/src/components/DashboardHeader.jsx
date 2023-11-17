@@ -57,7 +57,6 @@ const DashboardHeader = ({ setIsOpen, isOpen }) => {
   const [firstName, setFirstName] = useState("A");  
   const [lastName, setLastName] = useState(""); 
   const [initials, setInitials] = useState("");
- 
 
   useEffect(() => {
     if (isLoggedIn) {
@@ -113,6 +112,10 @@ const DashboardHeader = ({ setIsOpen, isOpen }) => {
   const open = Boolean(anchorEl);
   const id = open ? 'simple-popover' : undefined;
 
+  const avatarDisplay = avatarUrl ? 
+    <Avatar src={avatarUrl} onClick={handleClick} alt={`${firstName} ${lastName}`} /> :
+    <Avatar onClick={handleClick}>{initials}</Avatar>;
+
   return (
     <AppBar
       position="fixed"
@@ -142,9 +145,7 @@ const DashboardHeader = ({ setIsOpen, isOpen }) => {
           {isLoggedIn ? (
             <>
               <Badge overlap="circular" variant="dot" color={isOnline ? 'primary' : 'error'}>
-                <Avatar onClick={handleClick} src={avatarUrl}>
-                  { avatarUrl ? null : initials }
-                </Avatar>
+                  { avatarDisplay}
               </Badge>
               <IconButton color="inherit" onClick={toggleUserStatus}>
                 <FiberManualRecordIcon color={isOnline ? 'success' : 'error'} />

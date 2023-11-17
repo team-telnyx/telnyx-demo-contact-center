@@ -85,7 +85,12 @@ router.post('/webhook', async (req, res) => {
       tag: tags,
       conversation_id: conversation.conversation_id  // Link the message to the conversation
     });
-    broadcast('NEW_MESSAGE', newMessage);
+    broadcast('NEW_MESSAGE', {
+      ...newMessage.get({ plain: true }), // Assuming newMessage is a Sequelize instance
+      isAssigned: conversation.assigned,
+      assignedAgent: conversation.agent_assigned
+    });
+    console.log(conversation.assigned);
     // Update the last message in the conversation
     await Conversations.update({
       last_message: messageText,
@@ -215,6 +220,22 @@ router.get('/conversationMessages/:conversation_id', async (req, res) => {
     res.status(500).send('Server Error');
   }
 });
+
+router.get('/assignedTo/:agentUsername', async (req, res) => {
+  try {
+    const assignedConversations = await Conversations.findAll({
+      where: {
+        agent_assigned: req.params.agentUsername
+      },
+      // include other necessary attributes
+    });
+    res.json(assignedConversations);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Server Error');
+  }
+});
+
 
 
 module.exports = router;

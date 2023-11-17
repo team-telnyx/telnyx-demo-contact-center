@@ -36,7 +36,7 @@ app.use(
 
 // Middleware
 app.use(cors());
-app.use(bodyParser.json());
+app.use(bodyParser.json({limit: '20mb'}));
 
 // User Routes
 app.use('/api/users', userRoutes);

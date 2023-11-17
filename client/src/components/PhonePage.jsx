@@ -8,9 +8,6 @@ import { io } from "socket.io-client";
 import { useUnreadCount } from './UnreadCount';
 const telnyxApiKey = process.env.REACT_APP_TELNYX_API_KEY;
 
-console.log('API Host:', process.env.REACT_APP_API_HOST);
-console.log('API Port:', process.env.REACT_APP_API_PORT);
-
 const getAgentsWithTag = async (tag) => {
   try {
     const response = await axios.get('https://api.telnyx.com/v2/phone_numbers', {

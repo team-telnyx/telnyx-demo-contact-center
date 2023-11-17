@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useContext } from 'react';
-import { BrowserRouter as Router, Route, Routes, Navigate, useRoutes, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Route, Routes, useRoutes, Navigate } from 'react-router-dom';
 import { ThemeProvider } from '@mui/material/styles';
 import theme from './components/Theme';
 import DashboardHeader from './components/DashboardHeader';
@@ -39,13 +39,14 @@ function App() {
 function AuthenticatedApp() {
   const { isLoggedIn, isLoading } = useAuth();
 
+
   if (isLoading) {
     return <div>Loading...</div>; // Show loading indicator
   }
 
   if (!isLoggedIn) {
     // Redirect to login if not logged in
-    return <Navigate to="/login" redirect />;
+    return <Navigate to="/login" replace />
   }
 
   return (
@@ -75,6 +76,7 @@ function TelnyxRTCProviderWrapper() {
 function AppContent() {
   const [isOpen, setIsOpen] = useState(false);
   const { unreadCount, setUnreadCount, setQueueUnreadCount, setCallQueueUnreadCount } = useUnreadCount();
+  const { username } = useAuth();
   
   useEffect(() => {
     const socket = io("https://osbs.ca:3000");
@@ -84,7 +86,9 @@ function AppContent() {
     });
 
     socket.on("NEW_MESSAGE", (msg) => {
+      if (msg.isAssigned && msg.assignedAgent === username) {
       setUnreadCount(prevCount => prevCount + 1);
+      }
     });
 
     socket.on("NEW_CONVERSATION", (msg) => {

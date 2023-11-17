@@ -3,10 +3,15 @@ import {
   Card,
   CardContent,
   CardActions,
-  TextField,
   Button,
   Avatar,
   IconButton,
+  FormControl,
+  FormLabel,
+  OutlinedInput,
+  InputLabel,
+  Input,
+  Box
 } from '@mui/material';
 import PhotoCamera from '@mui/icons-material/PhotoCamera';
 import { useAuth } from './AuthContext';
@@ -54,7 +59,7 @@ const Profile = (isOpen) => {
       firstName,
       lastName,
       phoneNumber,
-      avatar,
+      avatar: avatar ? avatar.split(',')[1] : null,
     };
     // Pass the username to the updateUser function
     await updateUser(username, updatedUserData);
@@ -80,35 +85,52 @@ const Profile = (isOpen) => {
 
   return (
     <div style={{ marginTop: '64px', marginLeft }}>
-    <Card>
-      <CardContent>
-        <Avatar src={avatar} alt={`${firstName} ${lastName}`} />
-        <IconButton color="primary" aria-label="upload picture" component="span">
-          <input type="file" accept="image/*" onChange={handleFileSelect} hidden />
-          <PhotoCamera />
-        </IconButton>
-        <TextField
-          label="First Name"
-          value={firstName}
-          onChange={(e) => setFirstName(e.target.value)}
-        />
-        <TextField
-          label="Last Name"
-          value={lastName}
-          onChange={(e) => setLastName(e.target.value)}
-        />
-        <TextField
-          label="Phone Number"
-          value={phoneNumber}
-          onChange={(e) => setPhoneNumber(e.target.value)}
-        />
-      </CardContent>
-      <CardActions>
-        <Button variant="contained" color="primary" onClick={handleSave}>
-          Save
-        </Button>
-      </CardActions>
-    </Card>
+      <Card>
+        <CardContent>
+          <Box display="flex" flexDirection="column" alignItems="center" gap={2}>
+            <Avatar src={avatar} alt={`${firstName} ${lastName}`} sx={{ width: 56, height: 56 }} />
+            <IconButton color="primary" aria-label="upload picture" component="label">
+              <input type="file" accept="image/*" onChange={handleFileSelect} hidden />
+              <PhotoCamera />
+            </IconButton>
+            <FormControl fullWidth variant="outlined" margin="normal">
+              <FormLabel htmlFor="firstName">First Name</FormLabel>
+              <OutlinedInput
+                id="firstName"
+                name="firstName"
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                notched={false}
+              />
+            </FormControl>
+            <FormControl fullWidth variant="outlined" margin="normal">
+              <FormLabel htmlFor="lastName">Last Name</FormLabel>
+              <OutlinedInput
+                id="lastName"
+                name="lastName"
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                notched={false}
+              />
+            </FormControl>
+            <FormControl fullWidth variant="outlined" margin="normal">
+              <FormLabel htmlFor="phoneNumber">Phone Number</FormLabel>
+              <OutlinedInput
+                id="phoneNumber"
+                name="phoneNumber"
+                value={phoneNumber}
+                onChange={(e) => setPhoneNumber(e.target.value)}
+                notched={false}
+              />
+            </FormControl>
+          </Box>
+        </CardContent>
+        <CardActions>
+          <Button variant="contained" color="primary" onClick={handleSave}>
+            Save
+          </Button>
+        </CardActions>
+      </Card>
     </div>
   );
 };

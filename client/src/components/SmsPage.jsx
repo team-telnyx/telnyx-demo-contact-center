@@ -6,9 +6,7 @@ import { useUnreadCount } from './UnreadCount';
 import './SmsPage.css';
 import { io } from "socket.io-client";
 
-const telnyxApiKey = process.env.REACT_APP_TELNYX_API_KEY; // Replace with your actual Telnyx API Key
-
-console.log("test", telnyxApiKey);
+const telnyxApiKey = process.env.REACT_APP_TELNYX_API_KEY; 
 const getAgentsWithTag = async (tag) => {
   try {
     const response = await axios.get('https://api.telnyx.com/v2/phone_numbers', {
@@ -58,21 +56,24 @@ const SmsPage = ({ isOpen }) => {
         setConversations(prevConversations => {
             return prevConversations.map(conv => {
                 if (conv.conversation_id === msg.conversation_id) {
+                  if (msg.isAssigned && msg.assignedAgent === username) {
                     return {
                         ...conv,
-                        last_message: msg.text_body // Assuming `text_body` is the field you want
+                        last_message: msg.text_body 
                     };
-                }
+                }}
                 return conv;
             });
         });
         console.log("New message received:", msg);
     });
 
-    socket.on("NEW_CONVERSATION", (msg) => {
-        setConversations(prev => [...prev, msg]);
-        console.log("New conversation received:", msg);
-    });
+    socket.on("CONVERSATION_ASSIGNED", (assignedConversation) => {
+      setConversations(prevConversations =>
+          prevConversations.filter(conv => conv.conversation_id !== assignedConversation.conversation_id)
+      );
+  });
+  
 
     socket.on("disconnect", () => {
         console.log('Disconnected from the server');
@@ -92,15 +93,15 @@ const SmsPage = ({ isOpen }) => {
       fetchAgentNumbers();
 
       // Fetch conversations directly without relying on globalConversations
-      const fetchConversations = async () => {
+      const fetchAssignedConversations = async () => {
         try {
-          const res = await axios.get('https://osbs.ca:3000/api/conversations/unassignedConversations');
+          const res = await axios.get(`https://osbs.ca:3000/api/conversations/assignedTo/${username}`);
           setConversations(res.data);
         } catch (err) {
           console.error('Error fetching conversations:', err);
         }
       };
-      fetchConversations();
+      fetchAssignedConversations();
     }
   }, [username]);
 
@@ -160,9 +161,9 @@ const SmsPage = ({ isOpen }) => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          From: selectedConversation.from_number,  // Assume this info is in selectedConversation
+          From: selectedConversation.from_number,  
           Text: newMessage.body,
-          To: selectedConversation.to_number,  // Assume this info is in selectedConversation
+          To: selectedConversation.to_number, 
         }),
       })
       .then((response) => response.json())

@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import axios from 'axios';
 import './LoginPage.css'; // Reusing the same CSS file
 import telnyxLogo from '../assets/telnyx_logo_black.png'; // Assuming you want to use the same logo
-import {Button, FormControl, OutlinedInput, Box, FormLabel} from '@mui/material'; // Reusing Material-UI components
+import {Button, FormControl, OutlinedInput, Box, FormLabel, InputLabel, Input} from '@mui/material'; // Reusing Material-UI components
 import { useNavigate } from 'react-router-dom';
 
 function RegisterPage() {
@@ -18,7 +18,21 @@ function RegisterPage() {
   const navigate = useNavigate();
 
   const handleChange = (e) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
+    if (e.target.name === 'avatar') {
+      // Handle file input for avatar
+      const file = e.target.files[0];
+      if (file && file.type.match('image/jpeg')) {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          setFormData({ ...formData, avatar: reader.result });
+        };
+        reader.readAsDataURL(file);
+      } else {
+        setError('Please upload a JPG image for the avatar');
+      }
+    } else {
+      setFormData({ ...formData, [e.target.name]: e.target.value });
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -44,7 +58,7 @@ function RegisterPage() {
         </div>
         <Box p={2}>
           <form onSubmit={handleSubmit}>
-            {Object.keys(formData).map((field) => (
+            {Object.keys(formData).map((field) => field !== 'avatar' && (
               <FormControl fullWidth variant="outlined" margin="normal" key={field}>
                 <FormLabel htmlFor={field} style={{ color: '#00a37a' }}>{field.charAt(0).toUpperCase() + field.slice(1)}</FormLabel>
                 <OutlinedInput
@@ -58,6 +72,16 @@ function RegisterPage() {
                 />
               </FormControl>
             ))}
+            <FormControl fullWidth variant="outlined" margin="normal">
+              <InputLabel htmlFor="avatar" style={{ color: '#00a37a' }}>Avatar (JPG only)</InputLabel>
+              <Input
+                id="avatar"
+                name="avatar"
+                type="file"
+                onChange={handleChange}
+                notched={false}
+              />
+            </FormControl>
             <Button variant="contained" color="primary" type="submit">
               Register
             </Button>
