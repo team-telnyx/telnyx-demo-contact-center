@@ -33,6 +33,7 @@ export const ModalProvider = ({ children }) => {
   };
 
   const handleAnswer = () => {
+    console.log("WebRTC Answer",callObject)
     if (callObject) {
       callObject.answer();
       setCallState("ACTIVE");
@@ -112,6 +113,7 @@ export const ModalProvider = ({ children }) => {
         if (call.state.toUpperCase() === "RINGING") {
           setCallState("INCOMING");
           setCallerInfo({ name: call.options.remoteCallerName, number: call.options.remoteCallerNumber });
+          console.log("Setting call object", call)
           setCallObject(call);
           setIsModalOpen(true);
         } else if (call.state.toUpperCase() === "ACTIVE") {

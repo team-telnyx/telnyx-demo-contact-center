@@ -44,6 +44,24 @@ const PhonePage = ({ isOpen }) => {
   const sipCredentials = useContext(SIPCredentialsContext); // Use SIPCredentialsContext
   const sipUsername = sipCredentials.login;
   const { setCallQueueUnreadCount } = useUnreadCount();
+  const [isConferenceCreated, setIsConferenceCreated] = useState(false);
+  
+  const {
+    clientStatus,
+    callState,
+    dialNumber,
+    callerInfo,
+    handleDialClick,
+    handleCall,
+    handleHangUp,
+    handleBackspace,
+    handleHold,
+    handleUnhold,
+    onHold,
+    activeCall,
+    Audio,
+    callControlId
+  } = useContext(ModalContext);  // Access values and methods from ModalContext
   
   useEffect(() => {
     //get outbound calll control id from websocket
@@ -76,23 +94,34 @@ const PhonePage = ({ isOpen }) => {
   }, [username, setCallQueueUnreadCount]);
 
   useEffect(() => {
+    const checkConferenceStatus = async () => {
+      try {
+        console.log("CALL CONTROL ID", callControlId)
+        const response = await axios.get(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/voice/conference-status/${callControlId}`);
+        setIsConferenceCreated(response.data.isConferenceCreated);
+      } catch (error) {
+        console.error('Error fetching conference status:', error);
+      }
+    };
     const fetchAllData = async () => {
         await fetchAgentData();
         await fetchQueueData();
+        await checkConferenceStatus();
     };
 
     fetchAllData();  // Initial fetch
 
     const intervalId = setInterval(fetchAllData, 5000);  // Fetch every 5 seconds
     return () => clearInterval(intervalId);  // Clear interval on component unmount
-  }, []);
+  }, [callControlId]);
 
   
 
   const fetchAgentData = async () => {
     try {
       const response = await axios.get(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/users/agents`);
-      setAgentQueueData(response.data);
+      const filteredAgents = response.data.filter(agent => agent.username !== username);
+      setAgentQueueData(filteredAgents);
     } catch (error) {
       console.error('Error fetching agent data:', error);
     }
@@ -165,41 +194,28 @@ const CallAcceptButton = ({ callControlId, callerId }) => {
     return <Button variant="contained" color="secondary" size="small" onClick={handleTransfer} disabled={isDisabled}>Warm Transfer</Button>;
   };
 
-  const CompleteWarmTransferButton = ({ callControlId, outboundCCID }) => {
+  const CompleteWarmTransferButton = ({ callControlId, outboundCCID, agentStatus }) => {
+    const isDisabled = !isConferenceCreated;
+    console.log("CALL CONTROL ID COMPLETE", callControlId, outboundCCID, agentStatus)
+    console.log("IS DISABLED", callState, agentStatus)
     const handleCompleteTransfer = async () => {
       try {
         const response = await axios.post(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/voice/complete-warm-transfer`, {
-          method: 'POST',
-          body: JSON.stringify({ callControlId: callControlId, outboundCCID: outboundCCID }),
-          headers: {
-            'Content-Type': 'application/json',
-          },
-        });
+        callControlId: callControlId,
+        outboundCCID: outboundCCID
+      }, {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
         console.log('Warm transfer completed:', response.data);
       } catch (error) {
         console.error('Error completing warm transfer:', error);
       }
     };
   
-    return <Button variant="contained" color="primary" size="small" onClick={handleCompleteTransfer}>Warm</Button>;
+    return <Button variant="contained" color="primary" size="small" onClick={handleCompleteTransfer} disabled={isDisabled}>Complete Warm Transfer</Button>;
   };
-
-  const {
-    clientStatus,
-    callState,
-    dialNumber,
-    callerInfo,
-    handleDialClick,
-    handleCall,
-    handleHangUp,
-    handleBackspace,
-    handleHold,
-    handleUnhold,
-    onHold,
-    activeCall,
-    Audio,
-    callControlId
-  } = useContext(ModalContext);  // Access values and methods from ModalContext
 
   if (!isLoggedIn) {
     return (

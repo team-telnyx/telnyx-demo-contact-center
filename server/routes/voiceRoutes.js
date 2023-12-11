@@ -121,7 +121,8 @@ router.post('/outbound', express.json(), async (req, res) => {
   const hangup_source = req.body.data.payload.hangup_source;
   const clientState = req.body.data.payload.client_state;
 
-  console.log(req.body.data);
+  console.log("OUTBOUND:", req.body.data);
+  console.log("BRIDGE ID", callControlId_Bridge);
   if (event_type === 'call.answered') {
     try {
       const bridgeResponse = await axios.post(`https://api.telnyx.com/v2/calls/${callControlId_Bridge}/actions/bridge`, {
@@ -154,13 +155,17 @@ router.post('/outbound', express.json(), async (req, res) => {
     }
     
   }
-  if (event_type === 'call.hangup' && hangup_source === "callee" && clientState !== Buffer.from(callControl).toString('base64')) {
+  if (event_type === 'call.hangup' && hangup_source === "callee" && clientState !== Buffer.from("Warm Transfer").toString('base64')) {
     try {
-      await telnyx.calls.hangup({ call_control_id: callControlId_Bridge });
+      await axios.post(`https://api.telnyx.com/v2/calls/${callControlId_Bridge}/actions/hangup`, {}, {
+          headers: {
+            'Authorization': `Bearer ${dotenv.config().parsed.TELNYX_API}`
+          }
+        });
       console.log('Call Hung Up');
       res.status(200).send('OK');
     } catch (error) {
-      console.error('Error hanging up call:', error);
+      console.error('Error hanging up call TEST:', error);
       res.status(500).send('Internal Server Error');
     }
    }
@@ -176,6 +181,7 @@ router.post('/transfer', express.json(), async (req, res) => {
   let isCallControlIdUsed = false;
   console.log("outbound CCID", outboundCCID);
   console.log("call control ID", callControlId);
+  console.log("COLD TRANSFER", req.body.data)
   if (outboundCCID && outboundCCID.length > 0) {
     // If outboundCCID is populated, use it for the transfer
     transferId = outboundCCID;
@@ -199,7 +205,8 @@ router.post('/transfer', express.json(), async (req, res) => {
     const response = await axios.post(`https://api.telnyx.com/v2/calls/${transferId}/actions/transfer`, {
       webhook_url: `https://${dotenv.config().parsed.APP_HOST}:${dotenv.config().parsed.APP_PORT}/api/voice/transfer-call?callControlId_Bridge=${transferId}${callControlFlag}`,
       from: callerId.number,
-      to: `sip:${sipUsername}@sip.telnyx.com`
+      to: `sip:${sipUsername}@sip.telnyx.com`,
+      client_state: Buffer.from("Transfer").toString('base64')
     }, {
       headers: {
         'Authorization': `Bearer ${dotenv.config().parsed.TELNYX_API}`
@@ -224,50 +231,57 @@ router.post('/transfer-call', express.json(), async (req, res) => {
     const isCallControlIdUsed = req.query.isCallControlIdUsed === 'true';
     const hangup_source = req.body.data.payload.hangup_source;
     const sipcode = req.body.data.payload.sip_hangup_cause;
+    const call_control = req.body.data.payload.call_control_id;
+    const webhook = req.body.data.payload;
+    let callData;
+    let transferId;
+    console.log("Call Object", webhook)
+    console.log("call Control Bridge", callControlId_Bridge)
+    console.log("Is Call Control ID Used", isCallControlIdUsed);
+    //if true don't lookup in database - inbound call
+    //if false lookup in database - outbound call
+    if (!isCallControlIdUsed) {
+      callData = await Voice.findOne({ where: { bridge_uuid: callControlId_Bridge } });
+      transferId = callData ? callData.queue_uuid : null;
+    } else {
+      transferId = callControlId_Bridge;
+    }
+    if (!transferId) {
+      console.error('Transfer ID not found');
+    }
 
-    let queueUuid = callControlId_Bridge;
-    let webrtc;
-  
-      const callData = await Voice.findOne({
-        where: { bridge_uuid: callControlId_Bridge }
-      });
-
-      if (callData) {
-        webrtc = callData.queue_uuid;
-      } else {
-        console.error('Call data not found for bridge_uuid:', callControlId_Bridge);
-        return;
-      }
-    
-    if (event_type === 'call.answered') {
+    if (event_type === 'call.answered' && isCallControlIdUsed === false) {
       try {
-        await axios.post(`https://api.telnyx.com/v2/calls/${webrtc}/actions/hangup`, {}, {
+        await axios.post(`https://api.telnyx.com/v2/calls/${transferId}/actions/hangup`, {}, {
           headers: {
             'Authorization': `Bearer ${dotenv.config().parsed.TELNYX_API}`
           }
         });
+        broadcast('OutboundCCID', null);
         console.log('WebRTC Call Hung Up');
       } catch (error) {
-        console.error('Error hanging up call:', error);
+        console.error('Error hanging up call answer:', error);
       }
     }
-    if (event_type === 'call.hangup' && hangup_source === "callee") {
+    if (event_type === 'call.hangup' && hangup_source === "callee" && isCallControlIdUsed === true) {
+      broadcast('OutboundCCID', null);
       try {
-        await axios.post(`https://api.telnyx.com/v2/calls/${queueUuid}/actions/hangup`, {}, {
+        await axios.post(`https://api.telnyx.com/v2/calls/${transferId}/actions/hangup`, {}, {
           headers: {
             'Authorization': `Bearer ${dotenv.config().parsed.TELNYX_API}`
-          }
-        });
-        console.log('Call Hung Up');
+           }
+         });
+        console.log('Call Hung Up INBOUND', call_control);
       } catch (error) {
-        console.error('Error hanging up call:', error);
+        console.error('Error hanging up call hangup:', error);
       }
     } 
     
-    if (event_type === 'call.hangup' && (sipcode === "480" || sipcode === "486")) {
+    if (event_type === 'call.hangup' && (sipcode === "480" || sipcode === "486") && isCallControlIdUsed === true) {
+      broadcast('OutboundCCID', null);
       try {
         // Play a message
-        await axios.post(`https://api.telnyx.com/v2/calls/${queueUuid}/actions/speak`, {
+        await axios.post(`https://api.telnyx.com/v2/calls/${transferId}/actions/speak`, {
           payload: 'The agent is not available. Transferring you back into the queue',
           voice: 'female',
           language: 'en-US'
@@ -278,7 +292,7 @@ router.post('/transfer-call', express.json(), async (req, res) => {
         });
 
         // Enqueue the call
-        await axios.post(`https://api.telnyx.com/v2/calls/${queueUuid}/actions/enqueue`, {
+        await axios.post(`https://api.telnyx.com/v2/calls/${transferId}/actions/enqueue`, {
           queue_name: 'General_Queue'
         }, {
           headers: {
@@ -290,54 +304,153 @@ router.post('/transfer-call', express.json(), async (req, res) => {
         console.error('Error processing call:', error);
       }
     }
-  } catch (error) {
-    console.error('Error processing webhook:', error);
+//does not work for outbound calls
+    if (event_type === 'call.hangup' && (sipcode === "480" || sipcode === "486") && isCallControlIdUsed === false) {
+      broadcast('OutboundCCID', null);
+      try {
+        // Play a message
+        await axios.post(`https://api.telnyx.com/v2/calls/${callControlId_Bridge}/actions/speak`, {
+          payload: 'The agent is not available. Transferring you into the queue',
+          voice: 'female',
+          language: 'en-US'
+        }, {
+          headers: {
+            'Authorization': `Bearer ${dotenv.config().parsed.TELNYX_API}`
+          }
+        });
+
+        // Enqueue the call
+        await axios.post(`https://api.telnyx.com/v2/calls/${callControlId_Bridge}/actions/enqueue`, {
+          queue_name: 'General_Queue'
+        }, {
+          headers: {
+            'Authorization': `Bearer ${dotenv.config().parsed.TELNYX_API}`
+          }
+        });
+
+        await axios.post(`https://api.telnyx.com/v2/calls/${callControlId_Bridge}/actions/playback_start`, {
+          audio_url: 'http://com.twilio.music.classical.s3.amazonaws.com/MARKOVICHAMP-Borghestral.mp3'
+        }, {
+          headers: {
+            'Authorization': `Bearer ${dotenv.config().parsed.TELNYX_API}`
+          }
+        });
+
+        await axios.post(`https://api.telnyx.com/v2/calls/${transferId}/actions/hangup`, {}, {
+          headers: {
+            'Authorization': `Bearer ${dotenv.config().parsed.TELNYX_API}`
+          }
+        });
+        console.log('Call Enqueued');
+      } catch (error) {
+        console.error('Error processing call:', error);
+      }
+    }
+  
   }
-});
+
+    catch (error) {
+    console.error('Error processing webhook:', error);
+    }
+  });
 
 //=================================================== AGENT WARM TRANSFER ===================================================
 
 router.post('/warm-transfer', express.json(), async (req, res) => {
   const { callControlId, sipUsername, callerId, outboundCCID, webrtcOutboundCCID } = req.body;
-  console.log(req.body);
-
+  console.log("WARM TRANSFER", req.body);
+  let queueUuid;
+  if (callControlId) {
   const callData = await Voice.findOne({
-    where: { bridge_uuid: callControlId } 
+    where: { bridge_uuid: callControlId } //works for inbound calls only callControlId and outbound is outboundCCID
   });
   if (callData) {
     queueUuid = callData.queue_uuid;
   }
+}
+else if (!callControlId) {
+  const callData = await Voice.findOne({
+    where: { bridge_uuid: outboundCCID } //works for inbound calls only callControlId and outbound is outboundCCID
+  });
+  if (callData) {
+    queueUuid = callData.queue_uuid;
+  }
+}
   console.log("webrtc outbound CCID", webrtcOutboundCCID)
   console.log("outbound CCID", outboundCCID);
   console.log("caller ID for warm", callerId.number)
   console.log("sip username for warm:", sipUsername)
-  console.log("call control ID for warm:", callControlId)
+  //console.log("call control ID for warm:", callControlId)
   console.log("queue uuid for warm:", queueUuid)
   try {
     //Create a conference
-    const updateClientState = await axios.put(`https://api.telnyx.com/v2/calls/${callControlId}/actions/client_state_update`, {
-      client_state: Buffer.from(callControlId).toString('base64'),
-    }, {
-      headers: {
-        'Authorization': `Bearer ${dotenv.config().parsed.TELNYX_API}`
-      }
-    });
-    console.log('Client State Updated', updateClientState.data);
-    const conference = await createConference(callControlId); // callControlId = inbound and webrtcOutboundCCID = outbound 
+    if (callControlId) {
+    const conference = await createConference(callControlId); // callControlId = inbound and webrtcOutboundCCID = outbound - need logic to determine which is which and pass the correct call_control_id
     console.log('Conference created:', conference.data.id);
     // Update the database with the conference ID
     await Voice.update(
       { conference_id: conference.data.id },
-      { where: { bridge_uuid: callControlId } }
+      { where: { bridge_uuid: callControlId } } // callControlId = inbound and outboundCCID = outbound - need logic to determine which is which and pass the correct call_control_id
     );
-    const queueHold = await axios.post(`https://api.telnyx.com/v2/calls/${queueUuid}/actions/playback_start`, {
+    //inbound calls
+    
+      console.log("INBOUND CALL")
+      const inboundQueueHold = await axios.post(`https://api.telnyx.com/v2/conferences/${conference.data.id}/actions/join`, {
+        hold: true,
+        hold_audio_url: 'http://com.twilio.music.classical.s3.amazonaws.com/oldDog_-_endless_goodbye_%28instr.%29.mp3',
+        call_control_id: queueUuid, //callControlId = inbound and outboundCCID = outbound - need logic to determine which is which and pass the correct call_control_id
+        client_state: Buffer.from("External").toString('base64'),
+        end_conference_on_exit: false
+      }, {
+        headers: {
+          'Authorization': `Bearer ${dotenv.config().parsed.TELNYX_API}`
+        }
+      });
+      console.log('Inbound Call on hold', inboundQueueHold.data);
+
+      // Dial the warm transfer agent and pass the conference ID
+    const webhookUrlWithParam = `https://${dotenv.config().parsed.APP_HOST}:${dotenv.config().parsed.APP_PORT}/api/voice/outbound-warm?conferenceID=${encodeURIComponent(conference.data.id)}`;
+    await telnyx.calls.create({
+      connection_id: '1446442091122001881', // Replace with your connection ID
+      to: `sip:${sipUsername}@sip.telnyx.com`,
+      from: callerId.number,
+      webhook_url: webhookUrlWithParam,
+    });
+    console.log('Warm Transfer Agent Dialed');
+
+    res.status(200).send('OK');
+    }
+    //if callControlId is populated, use it to fetch queueUuid from the database
+    else if (!callControlId) {
+    console.log("OUTBOUND CALL")
+    console.log("outbound CCID", outboundCCID)
+    console.log("queue UUID", queueUuid)
+    const conference = await createConference(outboundCCID); // callControlId = inbound and webrtcOutboundCCID = outbound - need logic to determine which is which and pass the correct call_control_id
+    console.log('Conference created:', conference.data.id);
+    // Update the database with the conference ID
+    await Voice.update(
+      { conference_id: conference.data.id },
+      { where: { bridge_uuid: outboundCCID } } // callControlId = inbound and outboundCCID = outbound - need logic to determine which is which and pass the correct call_control_id
+    );
+
+    const outboundQueueHold = await axios.post(`https://api.telnyx.com/v2/conferences/${conference.data.id}/actions/hold`, {
       audio_url: 'http://com.twilio.music.classical.s3.amazonaws.com/oldDog_-_endless_goodbye_%28instr.%29.mp3',
+      call_control_ids: [queueUuid]
     }, {
       headers: {
         'Authorization': `Bearer ${dotenv.config().parsed.TELNYX_API}`
       }
     });
-    console.log('Call on hold', queueHold.data);
+    console.log('Outbound call on hold', outboundQueueHold.data);
+  
+    const updateClientState = await axios.put(`https://api.telnyx.com/v2/calls/${outboundCCID}/actions/client_state_update`, {
+      client_state: Buffer.from("External").toString('base64')
+    }, {
+      headers: {
+        'Authorization': `Bearer ${dotenv.config().parsed.TELNYX_API}`
+      }
+    });
+    console.log('Client state updated', updateClientState.data);
 
     // Dial the warm transfer agent and pass the conference ID
     const webhookUrlWithParam = `https://${dotenv.config().parsed.APP_HOST}:${dotenv.config().parsed.APP_PORT}/api/voice/outbound-warm?conferenceID=${encodeURIComponent(conference.data.id)}`;
@@ -350,8 +463,70 @@ router.post('/warm-transfer', express.json(), async (req, res) => {
     console.log('Warm Transfer Agent Dialed');
 
     res.status(200).send('OK');
+  }} catch (error) {
+    console.error('Error handling warm transfer:', error); //error.response.data
+    res.status(500).send('Internal Server Error');
+  }
+});
+
+router.post('/outbound-warm', express.json(), async (req, res) => {
+  const event_type = req.body.data.event_type;
+  const callControl = req.body.data.payload.call_control_id;
+  const conferenceId = req.query.conferenceID;
+  console.log("Outbound Warm", req.body.data)
+  if (event_type === 'call.answered') {
+    try {
+      // Add the call to the conference
+      await addCallToConference(callControl, conferenceId); //callControl = inbound and 
+      console.log('Agent added to conference');
+    } catch (error) {
+      console.error('Error during call bridging:', error);
+      res.status(500).send('Internal Server Error');
+    }
+    res.status(200).send('OK');
+  }
+});
+//check if the conference is created so that I can update my front end button to enable the complete warm transfer button
+router.get('/conference-status/:callControlId', async (req, res) => {
+  try {
+    const callData = await Voice.findOne({
+      where: { bridge_uuid: req.params.callControlId }
+    });
+    const isConferenceCreated = callData && callData.conference_id != null;
+    res.json({ isConferenceCreated });
   } catch (error) {
-    console.error('Error handling warm transfer:', error.response.data); //error.response.data
+    console.error('Error fetching conference status:', error);
+    res.status(500).send('Internal Server Error');
+  }
+});
+
+
+// Add a route for the ability to complete the warm transfer by unholding the queue call
+router.post('/complete-warm-transfer', express.json(), async (req, res) => {
+  const { callControlId, outboundCCID } = req.body;
+  console.log("UNHOLD", req.body.callControlId)
+  console.log("UNHOLD ALL", req.body)
+  const callData = await Voice.findOne({
+    where: { bridge_uuid: callControlId }
+  });
+  if (callData) {
+    conferenceId = callData.conference_id;
+    queueId = callData.queue_uuid;
+  }
+  
+  try {
+    // Unhold the queue call
+    const unholdResponse = await axios.post(`https://api.telnyx.com/v2/conferences/${conferenceId}/actions/unhold`, {
+      call_control_ids: [queueId],
+    }, {
+      headers: {
+        'Authorization': `Bearer ${dotenv.config().parsed.TELNYX_API}`
+      }
+    });
+    console.log('Call unheld', unholdResponse.data);
+    res.status(200).send('OK');
+  } catch (error) {
+    console.error('Error unholding call:', error);
     res.status(500).send('Internal Server Error');
   }
 });
@@ -361,6 +536,7 @@ async function createConference(callControlId) {
     const conferenceName = 'conf-' + Date.now();  // Using current timestamp to generate a unique conference name
     const conferenceParameters = {
         call_control_id: callControlId,
+        client_state: Buffer.from("Warm Transfer").toString('base64'),
         name: conferenceName,
         beep_enabled: 'always',
         start_conference_on_create: true
@@ -373,29 +549,10 @@ async function createConference(callControlId) {
   }
 }
 
-router.post('/outbound-warm', express.json(), async (req, res) => {
-  const event_type = req.body.data.event_type;
-  const callControl = req.body.data.payload.call_control_id;
-  const conferenceId = req.query.conferenceID;
-  console.log("Outbound Warm", req.body.data)
-  if (event_type === 'call.answered') {
-    try {
-      // Add the call to the conference
-      await addCallToConference(callControl, conferenceId);
-      console.log('Agent added to conference');
-    } catch (error) {
-      console.error('Error during call bridging:', error);
-      res.status(500).send('Internal Server Error');
-    }
-    res.status(200).send('OK');
-  }
-});
-
-
 const addCallToConference = async (callControlId, conferenceId) => {
   const telnyxApiUrl = `https://api.telnyx.com/v2/conferences/${conferenceId}/actions/join`;
   const joinConferenceParameters = {
-    call_control_id: callControlId
+    call_control_id: callControlId,
   };
 
   try {
@@ -416,37 +573,6 @@ const addCallToConference = async (callControlId, conferenceId) => {
     throw error; // re-throw the error to be handled by the calling function
   }
 };
-
-// endpoint to add queue calls to conference
-router.post('/complete-warm-transfer', express.json(), async (req, res) => {
-  const { callControlId, outboundCCID } = req.body;
-  
-  let idToUse = outboundCCID || callControlId; // Use OutboundCCID if available, otherwise callControlId
-  let whereCondition = outboundCCID ? { bridge_uuid: callControlId  } : { queue_uuid: outboundCCID };
-  console.log("PARTICIPANT CCID", callControlId)
-  console.log("OUTBOUND CCID", outboundCCID)
-  try {
-    // Retrieve the conference ID from the database
-    const callData = await Voice.findOne({
-      where: whereCondition
-    });
-
-    if (!callData) {
-      throw new Error('Call data not found');
-    }
-
-    const conferenceId = callData.conference_id;
-
-    // Add the call to the conference
-    await addCallToConference(idToUse, conferenceId);
-    console.log('Call added to conference');
-    res.status(200).send('OK');
-  } catch (error) {
-    console.error('Error adding call to conference:', error);
-    res.status(500).send('Internal Server Error');
-  }
-});
-
 //============= PARK OUTBOUND CALLS FUNCTIONALITY ===================
 // This is when the webrtc user dials an outbound number from the PhonePage component and the call is parked via /outbound-webrtc
 router.post('/outbound-webrtc', express.json(), async (req, res) => {
@@ -470,7 +596,7 @@ router.post('/outbound-webrtc', express.json(), async (req, res) => {
     // Answer the call using the Telnyx API
     if (event_type === 'call.initiated' && direction === 'outgoing' && state === 'parked') {
       broadcast('WebRTC_OutboundCCID', req.body.data.payload.call_control_id);
-
+      console.log("WEBRTC OUTBOUND CCID", req.body.data.payload.call_control_id)
         Voice.create({
           telnyx_number: data.payload.from, // 'to' number on inbound call
           destination_number: data.payload.to, // 'from' number on inbound call
@@ -489,6 +615,7 @@ router.post('/outbound-webrtc', express.json(), async (req, res) => {
     }
     if (event_type === 'call.answered' && clientState === Buffer.from(callControlId).toString('base64')) {
       const transferId = req.body.data.payload.call_control_id;
+      console.log("WEBRTC ANSWER OUTBOUND CCID", transferId)
       const telnyxRequestBody = {
         connection_id: '1446442091122001881', // Replace with your connection ID
         to: toNumber,
@@ -524,7 +651,6 @@ router.post('/outbound-webrtc-bridge', express.json(), async (req, res) => {
   const hangup_source = req.body.data.payload.hangup_source;
   const clientState = req.body.data.payload.client_state;
 
-  console.log(req.body.data);
   if (event_type === 'call.answered') {
     broadcast('OutboundCCID', req.body.data.payload.call_control_id);
     try {
@@ -559,7 +685,9 @@ router.post('/outbound-webrtc-bridge', express.json(), async (req, res) => {
     }
     
   }
-  if (event_type === 'call.hangup' && hangup_source === "callee" && clientState == Buffer.from(callControl).toString('base64')) {
+  console.log("CALL CONTROL CLIENT STATE", clientState);
+  if (event_type === 'call.hangup' && hangup_source === "callee" && clientState !== Buffer.from("Transfer").toString('base64')) {
+    console.log("WEBRTC HANGUP")
     try {
       await axios.post(`https://api.telnyx.com/v2/calls/${callControlId_Bridge}/actions/hangup`, {}, {
       headers: {
@@ -570,7 +698,7 @@ router.post('/outbound-webrtc-bridge', express.json(), async (req, res) => {
     console.log('Call Hung Up');
     res.status(200).send('OK');
   } catch (error) {
-    console.error('Error hanging up call:', error);
+    console.error('Error hanging up call outbound:', error);
     res.status(500).send('Internal Server Error');
   }
   }
