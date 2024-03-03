@@ -9,7 +9,7 @@ import { useNavigate } from 'react-router-dom';
 function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const { setIsLoggedIn } = useAuth();
+  const { setIsLoggedIn, setToken } = useAuth();
   const [error, setError] = useState("");
   const navigate = useNavigate();
 
@@ -31,6 +31,7 @@ function LoginPage() {
 
       // Save token to local storage or state or use it.
       localStorage.setItem('token', token);
+      setToken(token);
       setIsLoggedIn(true);
       navigate('/dashboard');
       

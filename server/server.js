@@ -13,8 +13,8 @@ const https = require('https');
 const seedDatabase = require('./seeds/seed');
 const { initWebSocket } = require('./routes/websocket');
 
-const privateKey = fs.readFileSync('/etc/letsencrypt/live/osbs.ca/privkey.pem', 'utf8');
-const certificate = fs.readFileSync('/etc/letsencrypt/live/osbs.ca/fullchain.pem', 'utf8');
+const privateKey = fs.readFileSync('/etc/letsencrypt/live/telnyx.solutions/privkey.pem', 'utf8');
+const certificate = fs.readFileSync('/etc/letsencrypt/live/telnyx.solutions/fullchain.pem', 'utf8');
 
 const credentials = {
   key: privateKey,

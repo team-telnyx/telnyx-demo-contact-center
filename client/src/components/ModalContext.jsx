@@ -50,7 +50,8 @@ export const ModalProvider = ({ children }) => {
 
   const handleCall = (callerNumber, dialNumber) => {
     try {
-      const newCall = client.newCall({ callerNumber: callerNumber, destinationNumber: dialNumber });
+      const custom = [ { name: "X-INVITE-Call", value: "9999999", }, ];
+      const newCall = client.newCall({ callerNumber: callerNumber, destinationNumber: dialNumber, customHeaders: custom, clientState: "VGVzdA==" });
       setCallObject(newCall);
       setCallState("DIALING");
     } catch (error) {

@@ -43,7 +43,7 @@ const SmsPage = ({ isOpen }) => {
 
   useEffect(() => {
     setUnreadCount(0);
-    const socket = io("https://osbs.ca:3000");
+    const socket = io(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}`);
 
     socket.on("connect", () => {
         console.log('Connected to the server');
@@ -95,7 +95,7 @@ const SmsPage = ({ isOpen }) => {
       // Fetch conversations directly without relying on globalConversations
       const fetchAssignedConversations = async () => {
         try {
-          const res = await axios.get(`https://osbs.ca:3000/api/conversations/assignedTo/${username}`);
+          const res = await axios.get(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_HOST}/api/conversations/assignedTo/${username}`);
           setConversations(res.data);
         } catch (err) {
           console.error('Error fetching conversations:', err);
@@ -108,7 +108,7 @@ const SmsPage = ({ isOpen }) => {
   const selectConversation = async (conversation) => {
     setSelectedConversation(conversation);
     try {
-      const res = await axios.get(`https://osbs.ca:3000/api/conversations/conversationMessages/${conversation.conversation_id}`);
+      const res = await axios.get(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/conversationMessages/${conversation.conversation_id}`);
       setConversationMessages(res.data);
     } catch (err) {
       console.error('Error fetching messages:', err);
@@ -132,7 +132,7 @@ const SmsPage = ({ isOpen }) => {
   // function to handle new messages 
   const handleCompose = () => {
     // Perform the API call to send the message here
-    fetch('https://osbs.ca:3000/api/conversations/composeMessage', {
+    fetch(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/composeMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -157,7 +157,7 @@ const SmsPage = ({ isOpen }) => {
     // Check if a conversation is selected
     if (selectedConversation) {
       // Perform the API call to send the message here
-      fetch('https://osbs.ca:3000/api/conversations/composeMessage', {
+      fetch(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/composeMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

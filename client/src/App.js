@@ -79,7 +79,7 @@ function AppContent() {
   const { username } = useAuth();
   
   useEffect(() => {
-    const socket = io("https://osbs.ca:3000");
+    const socket = io(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/websocket`);
 
     socket.on("connect", () => {
       console.log('Connected to the server');

@@ -11,7 +11,7 @@ export const SIPCredentialsProvider = ({ children }) => {
     if (isLoggedIn) {
     const authToken = localStorage.getItem('token');
     if (authToken) {
-      axios.get('https://osbs.ca:3000/api/users/sip-credentials', {
+      axios.get(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/users/sip-credentials`, {
         headers: {
           Authorization: `Bearer ${authToken}`
         }

@@ -12,6 +12,7 @@ export const AuthProvider = ({ children }) => {
   const [isOnline, setIsOnline] = useState(false);
   const [username, setUsername] = useState(""); 
   const [isLoading, setIsLoading] = useState(true);
+  const [token, setToken] = useState(localStorage.getItem('token'));
 
   useEffect(() => {
     const checkLoginStatus = () => {
@@ -50,7 +51,7 @@ export const AuthProvider = ({ children }) => {
     };
 
     checkLoginStatus();
-  }, [username]);
+  }, [token]);
 
   const value = {
     isLoggedIn,
@@ -58,7 +59,8 @@ export const AuthProvider = ({ children }) => {
     setIsLoggedIn,
     setIsOnline,
     username,
-    isLoading
+    isLoading,
+    setToken
   };
 
   return (
