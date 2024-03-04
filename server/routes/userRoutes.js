@@ -148,7 +148,7 @@ router.get('/user_data/:username', async (req, res) => {
 
 //===================== GET ALL AGENTS ENDPOINT =====================
 // Get all agents
-router.get('/webhook/agents', async (req, res) => {
+router.get('/agents', async (req, res) => {
   try {
     const agents = await User.findAll();
     res.status(200).json(agents);
