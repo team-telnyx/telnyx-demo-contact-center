@@ -13,8 +13,7 @@ const SideNav = ({ isOpen }) => {
   const items = [
     { text: 'Agent Dashboard', icon: <DashboardIcon />, path: 'dashboard' },
     { text: 'Phone', icon: <PhoneIcon />, path: 'phone' },
-    { text: 'Conversations', icon: <SmsIcon />, path: 'sms' },
-    { text: 'Message Queue', icon: <QueueIcon />, path: 'message_queue' }
+    { text: 'Conversations', icon: <SmsIcon />, path: 'sms' }
   ];
 
   return (
@@ -33,14 +32,10 @@ const SideNav = ({ isOpen }) => {
           <ListItem button key={text} component={Link} to={`/${path}`}>
           <ListItemIcon>
             {text === 'Conversations' ? (
-              <Badge badgeContent={unreadCount} color="secondary">
+              <Badge badgeContent={unreadCount + queueUnreadCount} color="secondary">
                 {icon}
               </Badge>
-            ) : text === 'Message Queue' ? (
-              <Badge badgeContent={queueUnreadCount} color="secondary">
-                {icon}
-              </Badge>
-            ) : text === 'Phone' ? ( // Add badge for Phone
+            ) : text === 'Phone' ? (
               <Badge badgeContent={callQueueUnreadCount} color="secondary">
                 {icon}
               </Badge>

@@ -1,21 +1,20 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { BrowserRouter as Router, Route, Routes, useRoutes, Navigate } from 'react-router-dom';
-import { ThemeProvider } from '@mui/material/styles';
+import { ThemeProvider, CssBaseline } from '@mui/material';
 import theme from './components/Theme';
 import DashboardHeader from './components/DashboardHeader';
 import SideNav from './components/SideNav';
 import MainContent from './components/MainContent';
 import PhonePage from './components/PhonePage';
 import SmsPage from './components/SmsPage';
-import MessageQueue from './components/MessageQueue';
 import LoginPage from './components/LoginPage';
 import Profile from './components/Profile';
 import RegisterPage from './components/RegisterPage';
 import { AuthProvider, useAuth } from './components/AuthContext';
 import { UnreadCountProvider, useUnreadCount } from './components/UnreadCount';
-import 'semantic-ui-css/semantic.min.css';
-import { ModalProvider, ModalContext } from './components/ModalContext';
-import CustomModal from './components/Modal';
+import { CallManagerProvider } from './contexts/CallManagerContext';
+import { EnhancedModalProvider } from './components/EnhancedModalContext';
+import UniversalCallModal from './components/UniversalCallModal';
 import { TelnyxRTCProvider } from '@telnyx/react-client';
 import { io } from "socket.io-client";
 import { SIPCredentialsProvider, SIPCredentialsContext } from './components/SIPCredentialsContext';
@@ -25,6 +24,7 @@ function App() {
     <AuthProvider>
       <Router>
         <ThemeProvider theme={theme}>
+          <CssBaseline />
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
@@ -58,17 +58,28 @@ function AuthenticatedApp() {
 
 function TelnyxRTCProviderWrapper() {
   const sipCredentials = useContext(SIPCredentialsContext);
+  const { isLoggedIn } = useAuth();
+  
+  console.log('TelnyxRTCProviderWrapper: sipCredentials:', sipCredentials);
+  console.log('TelnyxRTCProviderWrapper: isLoggedIn:', isLoggedIn);
+  
+  if (!isLoggedIn) {
+    return <Navigate to="/login" replace />;
+  }
+  
   if (!sipCredentials) {
-    return <div>Loading...</div>; // Show loading until sipCredentials are fetched
+    return <div>Loading WebRTC credentials...</div>;
   }
 
   return (
     <TelnyxRTCProvider credential={sipCredentials}>
-      <ModalProvider>
-        <UnreadCountProvider>
-          <AppContent />
-        </UnreadCountProvider>
-      </ModalProvider>
+      <CallManagerProvider>
+        <EnhancedModalProvider>
+          <UnreadCountProvider>
+            <AppContent />
+          </UnreadCountProvider>
+        </EnhancedModalProvider>
+      </CallManagerProvider>
     </TelnyxRTCProvider>
   );
 }
@@ -79,7 +90,7 @@ function AppContent() {
   const { username } = useAuth();
   
   useEffect(() => {
-    const socket = io(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/websocket`);
+    const socket = io(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}`);
 
     socket.on("connect", () => {
       console.log('Connected to the server');
@@ -95,6 +106,8 @@ function AppContent() {
       setQueueUnreadCount(prevCount => prevCount + 1);
     });
 
+    // NOTE: NEW_CALL is now handled by CallManagerProvider
+    // but we still update the unread count for UI badges
     socket.on("NEW_CALL", (msg) => {
       setCallQueueUnreadCount(prevCount => prevCount + 1);
     });
@@ -108,7 +121,9 @@ function AppContent() {
 
   return (
     <>
-      <CustomModal />
+      {/* New Universal Call Modal - works across all pages */}
+      <UniversalCallModal />
+      
       <DashboardHeader setIsOpen={setIsOpen} isOpen={isOpen} />
       <SideNav isOpen={isOpen} unreadCount={unreadCount} />
       <div style={{ padding: theme.spacing(8, 2, 0, 2), width: '100%' }}>
@@ -116,7 +131,6 @@ function AppContent() {
           <Route path="dashboard" element={<MainContent isOpen={isOpen} />} />
           <Route path="phone" element={<PhonePage isOpen={isOpen} />} />
           <Route path="sms" element={<SmsPage isOpen={isOpen} />} />
-          <Route path="message_queue" element={<MessageQueue isOpen={isOpen} />} />
           <Route path="update-user-settings" element={<Profile isOpen={isOpen}/>} />
           <Route path="view-profile" element={<Profile isOpen={isOpen}/>} />
         </Routes>

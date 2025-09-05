@@ -9,7 +9,7 @@
     "@mui/material": "^5.14.6",
     "@mui/material-next": "^6.0.0-alpha.99",
     "@telnyx/react-client": "^1.0.2",
-    "@telnyx/webrtc": "^2.10.1",
+    "@telnyx/webrtc": "^2.22.15",
     "@testing-library/jest-dom": "^5.17.0",
     "@testing-library/react": "^13.4.0",
     "@testing-library/user-event": "^13.5.0",
@@ -18,7 +18,7 @@
     "dotenv": "^16.3.1",
     "dotenv-webpack": "^8.0.1",
     "js-sha256": "^0.9.0",
-    "jwt-decode": "^3.1.2",
+    "jwt-decode": "^4.0.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-draggable": "^4.4.6",
@@ -30,8 +30,14 @@
     "web-vitals": "^2.1.4"
   },
   "scripts": {
-    "start": "HTTPS=true PORT=3001 react-scripts start",
+    "start": "PORT=3001 react-scripts start",
+    "start:https": "PORT=3001 HTTPS=true SSL_CRT_FILE=cert.pem SSL_KEY_FILE=key.pem react-scripts start",
+    "start:ngrok": "node start-with-ngrok.js",
+    "open:ngrok": "open https://frontend.telnyx.solutions",
     "build": "react-scripts build",
+    "serve:https": "node https-server.js",
+    "build:serve": "npm run build && npm run serve:https",
+    "build:serve:ngrok": "npm run build && npm run serve:https && npm run open:ngrok",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
   },

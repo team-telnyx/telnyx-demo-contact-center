@@ -6,19 +6,23 @@ const { v4: uuidv4 } = require('uuid');
 const crypto = require('crypto');
 
 const algorithm = 'aes-256-ctr';
-const secretKey = 'your-encryption-secret-key'; // You should use a .env variable for this
+const secretKey = process.env.ENCRYPTION_SECRET || 'dev-encryption-secret-key-change-in-production-32-chars-long';
 
-// Encryption and decryption utility functions
+// Modern encryption utility function (simplified for seed data)
 const encrypt = (text) => {
-  const cipher = crypto.createCipher(algorithm, secretKey);
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipher(algorithm, secretKey); // Keeping simpler method for seed data
   let crypted = cipher.update(text, 'utf8', 'hex');
   crypted += cipher.final('hex');
-  return crypted;
+  return iv.toString('hex') + ':' + crypted;
 };
 
 const decrypt = (text) => {
-  const decipher = crypto.createDecipher(algorithm, secretKey);
-  let dec = decipher.update(text, 'hex', 'utf8');
+  const textParts = text.split(':');
+  const iv = Buffer.from(textParts.shift(), 'hex');
+  const encryptedText = textParts.join(':');
+  const decipher = crypto.createDecipher(algorithm, secretKey); // Simplified for seed data
+  let dec = decipher.update(encryptedText, 'hex', 'utf8');
   dec += decipher.final('utf8');
   return dec;
 };

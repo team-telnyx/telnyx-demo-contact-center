@@ -16,7 +16,7 @@ const MessageQueue = ({ isOpen }) => {
 
     const fetchUnassignedConversations = async () => {
       try {
-        const res = await axios.get(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/unassignedConversations`);
+        const res = await axios.get(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/unassignedConversations`);
         setQueue(res.data);
       } catch (error) {
         console.error('Error fetching unassigned conversations:', error);
@@ -24,7 +24,7 @@ const MessageQueue = ({ isOpen }) => {
     };
 
     // Socket.IO setup
-    const socket = io(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}`);
+    const socket = io(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}`);
 
     socket.on("connect", () => {
       console.log('Connected to the server');
@@ -52,7 +52,7 @@ const MessageQueue = ({ isOpen }) => {
   const handleAssignMessage = async (index) => {
 
     try {
-      await axios.post(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/assignAgent`, {
+      await axios.post(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/assignAgent`, {
       conversation_id: queue[index].conversation_id,
       user: username
     });

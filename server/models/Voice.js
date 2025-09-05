@@ -42,8 +42,12 @@ Voice.init({
     type: DataTypes.STRING,
     allowNull: true
   },
-  conference_id: {
+  supervisor_call_id: {
     type: DataTypes.STRING,
+    allowNull: true
+  },
+  transfer_status: {
+    type: DataTypes.ENUM('warm_initiated', 'warm_connected', 'completed'),
     allowNull: true
   },
 }, {

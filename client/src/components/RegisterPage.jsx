@@ -39,7 +39,7 @@ function RegisterPage() {
     e.preventDefault();
     setError("");
     try {
-      const response = await axios.post(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/users/register`, formData);
+      const response = await axios.post(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/users/register`, formData);
       // Handle successful registration
       console.log(response.data); 
       navigate('/login'); // Navigate to login page after successful registration

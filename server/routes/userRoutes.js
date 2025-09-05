@@ -1,26 +1,33 @@
+require('dotenv').config();
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
-const dotenv = require('dotenv');
 const router = express.Router();
 const crypto = require('crypto');
-const algorithm = 'aes-256-ctr';
-const secretKey = 'your-encryption-secret-key'; // You should use a .env variable for this
+const algorithm = 'aes-256-gcm';
+const secretKey = process.env.ENCRYPTION_SECRET || 'fallback-key-for-dev';
 const axios = require('axios');
 
 //===================== ENCRYPTION OF SIP CREDENTIALS =====================
 // Encryption and decryption utility functions
 const encrypt = (text) => {
-  const cipher = crypto.createCipher(algorithm, secretKey);
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipherGCM(algorithm, secretKey, iv);
   let crypted = cipher.update(text, 'utf8', 'hex');
   crypted += cipher.final('hex');
-  return crypted;
+  const authTag = cipher.getAuthTag();
+  return iv.toString('hex') + ':' + authTag.toString('hex') + ':' + crypted;
 };
 
 const decrypt = (text) => {
-  const decipher = crypto.createDecipher(algorithm, secretKey);
-  let dec = decipher.update(text, 'hex', 'utf8');
+  const textParts = text.split(':');
+  const iv = Buffer.from(textParts.shift(), 'hex');
+  const authTag = Buffer.from(textParts.shift(), 'hex');
+  const encryptedText = textParts.join(':');
+  const decipher = crypto.createDecipherGCM(algorithm, secretKey, iv);
+  decipher.setAuthTag(authTag);
+  let dec = decipher.update(encryptedText, 'hex', 'utf8');
   dec += decipher.final('utf8');
   return dec;
 };
@@ -33,7 +40,7 @@ const authenticateUser = async (req, res, next) => {
   if (token == null) return res.sendStatus(401); // if no token, return 401 (unauthorized)
 
   try {
-    const decoded = jwt.verify(token, 'yourSecretKey');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret-for-dev');
     const user = await User.findOne({ where: { username: decoded.username } });
     if (!user) {
       throw new Error('No user found with this username.');
@@ -93,7 +100,7 @@ router.post('/register', async (req, res) => {
       };
   
       const profileResponse = await axios.post('https://api.telnyx.com/v2/outbound_voice_profiles', profileData, {
-        headers: { 'Authorization': `Bearer ${dotenv.config().parsed.TELNYX_API}` }
+        headers: { 'Authorization': `Bearer ${process.env.TELNYX_API}` }
       });
 
     if (profileResponse.status === 201) {
@@ -103,14 +110,14 @@ router.post('/register', async (req, res) => {
       connection_name: connectionName,
       user_name: sipUsername,
       password: sipPassword,
-      webhook_event_url: `https://${dotenv.config().parsed.APP_HOST}:${dotenv.config().parsed.APP_PORT}/api/voice/outbound-webrtc-bridge`,
+      webhook_event_url: `https://${process.env.APP_HOST}:${process.env.APP_PORT}/api/voice/outbound-webrtc-bridge`,
       outbound: {
         call_parking_enabled: true,
         outbound_voice_profile_id: profileResponse.data.data.id      }
     };
 
     const credentialResponse = await axios.post('https://api.telnyx.com/v2/credential_connections', connectionData, {
-      headers: { 'Authorization': `Bearer ${dotenv.config().parsed.TELNYX_API}` }
+      headers: { 'Authorization': `Bearer ${process.env.TELNYX_API}` }
     });
       
       res.status(200).json("User registered with SIP connection");
@@ -168,7 +175,7 @@ router.post('/login', async (req, res) => {
       const validated = await bcrypt.compare(password, user.password);
       if (!validated) return res.status(400).json("Wrong credentials");
       // Generate a token
-      const token = jwt.sign({ username: user.username }, 'yourSecretKey', { expiresIn: '1h' });
+      const token = jwt.sign({ username: user.username }, process.env.JWT_SECRET || 'fallback-secret-for-dev', { expiresIn: '1h' });
       // Set the session
       req.session.user = user;
       res.status(200).json({ token });

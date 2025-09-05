@@ -3,8 +3,18 @@ const Conversations = require('../models/Conversations'); // Import your model
 const Messages = require('../models/Messages'); // Import your model
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
-const dotenv = require('dotenv');
-const telnyx = require('telnyx')(dotenv.config().parsed.TELNYX_API);const crypto = require('crypto');
+const crypto = require('crypto');
+
+// Initialize telnyx client with error handling
+let telnyx = null;
+try {
+  if (process.env.TELNYX_API) {
+    const telnyxLib = require('telnyx');
+    telnyx = telnyxLib(process.env.TELNYX_API);
+  }
+} catch (error) {
+  console.warn('Telnyx client initialization failed in conversationRoutes:', error.message);
+}
 const { Op } = require("sequelize");
 const { broadcast } = require('./websocket');
 

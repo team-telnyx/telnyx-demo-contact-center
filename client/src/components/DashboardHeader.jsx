@@ -7,9 +7,10 @@ import SettingsIcon from '@mui/icons-material/Settings';
 import PersonIcon from '@mui/icons-material/Person';
 import { useAuth } from './AuthContext';
 import telnyxLogo from '../assets/telnyx_logo_green.png';
-import jwt_decode from 'jwt-decode';
+import { jwtDecode } from 'jwt-decode';
 import axios from 'axios';
 import { BrowserRouter as Router, Switch, Route, Link } from "react-router-dom";
+import { getApiBaseUrl } from '../utils/apiUtils';
 
 
 const ProfilePopover = ({ handleClose }) => (
@@ -32,14 +33,14 @@ const ProfilePopover = ({ handleClose }) => (
 const getUsernameFromToken = () => {
   const token = localStorage.getItem('token');
   if (!token) return null;
-  const decoded = jwt_decode(token);
+  const decoded = jwtDecode(token);
   return decoded.username;
 };
 
 const fetchAvatarAndName = async (setIsOnline) => {
   const username = getUsernameFromToken();
   try {
-    const response = await axios.get(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/users/user_data/${username}`);
+    const response = await axios.get(`${getApiBaseUrl()}/api/users/user_data/${username}`);
     const { avatar, firstName, lastName, status } = response.data;
     const initials = `${firstName[0]}${lastName[0]}`;
     setIsOnline(status); 
@@ -72,13 +73,39 @@ const DashboardHeader = ({ setIsOpen, isOpen }) => {
     }
   }, [isLoggedIn]);
 
+  // Add a function to refresh avatar data
+  const refreshAvatarData = async () => {
+    if (isLoggedIn) {
+      const data = await fetchAvatarAndName(setIsOnline);
+      if (data) {
+        const { avatar, firstName, lastName } = data;
+        setAvatarUrl(avatar);
+        setFirstName(firstName);
+        setLastName(lastName);
+        setInitials(`${firstName[0]}${lastName[0]}`);
+      }
+    }
+  };
+
+  // Listen for custom events to refresh avatar data when profile is updated
+  useEffect(() => {
+    const handleProfileUpdate = () => {
+      refreshAvatarData();
+    };
+
+    window.addEventListener('profileUpdated', handleProfileUpdate);
+    return () => {
+      window.removeEventListener('profileUpdated', handleProfileUpdate);
+    };
+  }, [isLoggedIn]);
+
   const toggleUserStatus = async () => {
     const username = getUsernameFromToken();
     if (username) {
       try {
         // Toggle the user's status
         const newStatus = !isOnline;
-        await axios.patch(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/users/update-status/${username}`, {
+        await axios.patch(`${getApiBaseUrl()}/api/users/update-status/${username}`, {
           status: newStatus
         });
         // Update the isOnline state if the status was successfully updated
@@ -98,7 +125,7 @@ const DashboardHeader = ({ setIsOpen, isOpen }) => {
   };
 
   const handleLogout = () => {
-    axios.post(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/users/logout`)
+    axios.post(`${getApiBaseUrl()}/api/users/logout`)
       .then((response) => {
         localStorage.removeItem('token');
         setIsLoggedIn(false);  // Update the context state
@@ -113,8 +140,22 @@ const DashboardHeader = ({ setIsOpen, isOpen }) => {
   const id = open ? 'simple-popover' : undefined;
 
   const avatarDisplay = avatarUrl ? 
-    <Avatar src={avatarUrl} onClick={handleClick} alt={`${firstName} ${lastName}`} /> :
-    <Avatar onClick={handleClick}>{initials}</Avatar>;
+    <Avatar 
+      src={avatarUrl} 
+      onClick={handleClick} 
+      alt={`${firstName} ${lastName}`}
+      sx={{
+        border: `3px solid ${isOnline ? '#4caf50' : '#f44336'}`,
+        cursor: 'pointer'
+      }}
+    /> :
+    <Avatar 
+      onClick={handleClick}
+      sx={{
+        border: `3px solid ${isOnline ? '#4caf50' : '#f44336'}`,
+        cursor: 'pointer'
+      }}
+    >{initials}</Avatar>;
 
   return (
     <AppBar
@@ -144,9 +185,7 @@ const DashboardHeader = ({ setIsOpen, isOpen }) => {
         <Box display="flex" flexGrow={1} justifyContent="flex-end">
           {isLoggedIn ? (
             <>
-              <Badge overlap="circular" variant="dot" color={isOnline ? 'primary' : 'error'}>
-                  { avatarDisplay}
-              </Badge>
+              {avatarDisplay}
               <IconButton color="inherit" onClick={toggleUserStatus}>
                 <FiberManualRecordIcon color={isOnline ? 'success' : 'error'} />
               </IconButton>

@@ -1,30 +1,31 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from './AuthContext';
-import { Card, CardContent, CardHeader, Button, Dialog, DialogTitle, DialogContent, DialogActions, FormLabel, TextField } from '@mui/material';
+import { Card, CardContent, CardHeader, Button, Dialog, DialogTitle, DialogContent, DialogActions, TextField, Table, TableHead, TableRow, TableCell, TableBody, Box, Typography, Paper, Select, MenuItem, FormControl, InputLabel } from '@mui/material';
 import { useUnreadCount } from './UnreadCount';
 import './SmsPage.css';
 import { io } from "socket.io-client";
 
-const telnyxApiKey = process.env.REACT_APP_TELNYX_API_KEY; 
 const getAgentsWithTag = async (tag) => {
   try {
-    const response = await axios.get('https://api.telnyx.com/v2/phone_numbers', {
+    const token = localStorage.getItem('token');
+    const response = await axios.get(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/telnyx/phone-numbers`, {
       params: {
-        'page[number]': 1,
-        'page[size]': 20,
-        'filter[tag]': tag,
+        tag: tag,
+        page: 1,
+        size: 20,
       },
       headers: {
-        'Authorization': `Bearer ${telnyxApiKey}`,
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
       },
     });
 
-    const phoneNumbers = response.data.data;
-    const agentNumbers = phoneNumbers.map((phoneNumber) => phoneNumber.phone_number);
+    const agentNumbers = response.data.data || [];
     return agentNumbers;
   } catch (error) {
     console.error('Error fetching agent numbers:', error);
+    console.error('Response:', error.response?.data);
     return [];
   }
 };
@@ -39,11 +40,13 @@ const SmsPage = ({ isOpen }) => {
   const [composeAgentNumber, setComposeAgentNumber] = useState('');
   const [newMessage, setNewMessage] = useState('');
   const [isComposeDialogOpen, setIsComposeDialogOpen] = useState(false);
-  const { setUnreadCount } = useUnreadCount();
+  const [messageQueue, setMessageQueue] = useState([]);
+  const { setUnreadCount, setQueueUnreadCount } = useUnreadCount();
 
   useEffect(() => {
     setUnreadCount(0);
-    const socket = io(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}`);
+    setQueueUnreadCount(0);
+    const socket = io(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}`);
 
     socket.on("connect", () => {
         console.log('Connected to the server');
@@ -68,19 +71,24 @@ const SmsPage = ({ isOpen }) => {
         console.log("New message received:", msg);
     });
 
+    socket.on("NEW_CONVERSATION", (newConversation) => {
+      console.log('New conversation received:', newConversation);
+      setMessageQueue((prev) => [...prev, newConversation]);
+    });
+
     socket.on("CONVERSATION_ASSIGNED", (assignedConversation) => {
       setConversations(prevConversations =>
           prevConversations.filter(conv => conv.conversation_id !== assignedConversation.conversation_id)
       );
-  });
-  
+      setMessageQueue((prev) => prev.filter((conv) => conv.conversation_id !== assignedConversation.conversation_id));
+    });
 
     socket.on("disconnect", () => {
         console.log('Disconnected from the server');
     });
 
     return () => socket.disconnect();
-}, [selectedConversation, conversationMessages, setUnreadCount, setConversations, setConversationMessages]);
+}, [selectedConversation, conversationMessages, setUnreadCount, setQueueUnreadCount, setConversations, setConversationMessages]);
 
 
   useEffect(() => {
@@ -95,20 +103,32 @@ const SmsPage = ({ isOpen }) => {
       // Fetch conversations directly without relying on globalConversations
       const fetchAssignedConversations = async () => {
         try {
-          const res = await axios.get(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_HOST}/api/conversations/assignedTo/${username}`);
+          const res = await axios.get(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/assignedTo/${username}`);
           setConversations(res.data);
         } catch (err) {
           console.error('Error fetching conversations:', err);
         }
       };
+
+      // Fetch unassigned conversations for message queue
+      const fetchUnassignedConversations = async () => {
+        try {
+          const res = await axios.get(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/unassignedConversations`);
+          setMessageQueue(res.data);
+        } catch (error) {
+          console.error('Error fetching unassigned conversations:', error);
+        }
+      };
+
       fetchAssignedConversations();
+      fetchUnassignedConversations();
     }
   }, [username]);
 
   const selectConversation = async (conversation) => {
     setSelectedConversation(conversation);
     try {
-      const res = await axios.get(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/conversationMessages/${conversation.conversation_id}`);
+      const res = await axios.get(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/conversationMessages/${conversation.conversation_id}`);
       setConversationMessages(res.data);
     } catch (err) {
       console.error('Error fetching messages:', err);
@@ -124,15 +144,10 @@ const SmsPage = ({ isOpen }) => {
     setNewMessage({ to: '', body: '' });
   };  
   
-  const agentNumberOptions = agentNumbers.map((number, index) => (
-    <option key={index} value={number}>
-      {number}
-    </option>
-  ));
   // function to handle new messages 
   const handleCompose = () => {
     // Perform the API call to send the message here
-    fetch(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/composeMessage`, {
+    fetch(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/composeMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -157,7 +172,7 @@ const SmsPage = ({ isOpen }) => {
     // Check if a conversation is selected
     if (selectedConversation) {
       // Perform the API call to send the message here
-      fetch(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/composeMessage`, {
+      fetch(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/composeMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -178,6 +193,23 @@ const SmsPage = ({ isOpen }) => {
       console.error("No conversation selected");
     }
   };
+
+  // Handle assigning message from queue to current agent
+  const handleAssignMessage = async (index) => {
+    try {
+      await axios.post(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/assignAgent`, {
+        conversation_id: messageQueue[index].conversation_id,
+        user: username
+      });
+      
+      // Remove from queue and add to conversations
+      const assignedConversation = messageQueue[index];
+      setMessageQueue((prevQueue) => prevQueue.filter((_, i) => i !== index));
+      setConversations(prevConversations => [...prevConversations, assignedConversation]);
+    } catch (error) {
+      console.error('Error assigning message:', error);
+    }
+  };
   if (!isLoggedIn) {
     return (
       <div style={{ marginTop: '64px', marginLeft }}>
@@ -187,111 +219,254 @@ const SmsPage = ({ isOpen }) => {
   }
   
   return (
-    <div style={{ marginTop: '64px', marginLeft }}>
-    <h1>Conversations</h1>
-    <hr />
-    <div className="smsPage">
-      <div className="smsColumns">
-        <div className="leftColumn">
-        <Card>
-        <CardHeader 
-            title="Conversations"
-            style={{backgroundColor: "black"}} 
-            action={
-                <Button variant="contained" color="primary" onClick={handleOpenComposeDialog}>
-                    Compose
-                </Button>
-            }
-        />
-        <CardContent>
-            <div className="conversationList">
-                {conversations.map((conversation, index) => (
-                    <Card key={index} variant="outlined" className="conversationCard">
-                        <CardContent onClick={() => selectConversation(conversation)}>
-                            <div>
-                                {conversation.from_number}:
-                                <div className="last-message">{conversation.last_message}</div>
-                            </div>
-                        </CardContent>
-                    </Card>
-                ))}
-            </div>
-        </CardContent>
-    </Card>
-        </div>
-        <div className="rightColumn">
-          <Card>
-            <CardHeader style={{backgroundColor: "black"}} title="Messages" />
-            <CardContent>
-              {selectedConversation ? (
-                <>
-                  <ul className="messageList">
-                    {conversationMessages.map((msg, index) => {
-                      const isOutbound = msg.direction === "outbound"; // Replace with your logic
-                      const messageClass = isOutbound ? "sent" : "received";
-                      const status = isOutbound ? "Sent" : "Delivered"; // Replace with your actual status
-                      const hoverInfo = `Number: ${isOutbound ? msg.telnyx_number : msg.destination_number}, Status: ${status}`;
-
-                      return (
-                        <li
-                          key={index}
-                          className={`messageItem ${messageClass}`}
-                          title={hoverInfo} 
+    <>
+      <Box sx={{ mt: 8, ml: marginLeft, p: 3 }}>
+        <Typography variant="h3" component="h1" gutterBottom sx={{ fontWeight: 600, mb: 3 }}>
+          Conversations & Message Queue
+        </Typography>
+        
+        <Box sx={{ 
+          display: 'flex', 
+          gap: 2, 
+          height: 'calc(100vh - 200px)',
+          overflowX: 'auto',
+          minWidth: 'min-content'
+        }}>
+          
+          {/* Message Queue Panel */}
+          <Card elevation={2} sx={{ minWidth: '350px', maxWidth: '350px', display: 'flex', flexDirection: 'column' }}>
+            <CardHeader 
+              title="Message Queue"
+              sx={{ 
+                bgcolor: 'primary.main', 
+                color: 'primary.contrastText',
+                '& .MuiCardHeader-title': { fontWeight: 600 },
+                m: 0
+              }}
+              action={
+                <Typography variant="body2" sx={{ color: 'inherit' }}>
+                  {messageQueue.length} unassigned
+                </Typography>
+              }
+            />
+            <CardContent sx={{ p: 0, flex: 1, overflow: 'hidden' }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>From</TableCell>
+                    <TableCell>To</TableCell>
+                    <TableCell align="center">Action</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {messageQueue.map((msg, index) => (
+                    <TableRow key={index} hover>
+                      <TableCell>
+                        <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                          {msg.from_number}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2">
+                          {msg.to_number}
+                        </Typography>
+                      </TableCell>
+                      <TableCell align="center">
+                        <Button 
+                          variant="contained" 
+                          color="primary" 
+                          size="small" 
+                          onClick={() => handleAssignMessage(index)}
+                          sx={{ fontSize: '0.75rem' }}
                         >
-                          {msg.text_body}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                  <Card>
-                  <div className="inputField">
-                    <TextField
-                      fullWidth
-                      variant="outlined"
-                      value={newMessage.body}
-                      onChange={(e) => setNewMessage({ ...newMessage, body: e.target.value })}
-                        onKeyDown={(e) => { if (e.key === 'Enter') { handleReply(); e.preventDefault(); } }}
-                        placeholder="Type a message..."
-                    />
-                    <Button variant="contained" color="primary" onClick={handleReply}>Send</Button>
-                  </div>
+                          Assign
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {messageQueue.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={3} align="center" sx={{ py: 4 }}>
+                        <Typography variant="body2" color="text.secondary">
+                          No unassigned messages
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+
+          {/* Conversations Panel */}
+          <Card elevation={2} sx={{ minWidth: '350px', maxWidth: '350px', display: 'flex', flexDirection: 'column' }}>
+            <CardHeader 
+              title="My Conversations"
+              sx={{ 
+                bgcolor: 'secondary.main', 
+                color: 'secondary.contrastText',
+                '& .MuiCardHeader-title': { fontWeight: 600 },
+                m: 0
+              }}
+              action={
+                <Button 
+                  variant="contained" 
+                  color="primary" 
+                  size="small"
+                  onClick={handleOpenComposeDialog}
+                >
+                  Compose
+                </Button>
+              }
+            />
+            <CardContent sx={{ flex: 1, overflow: 'auto', p: 1 }}>
+              {conversations.map((conversation, index) => (
+                <Card 
+                  key={index} 
+                  variant="outlined" 
+                  sx={{ 
+                    mb: 1, 
+                    cursor: 'pointer',
+                    '&:hover': { bgcolor: 'action.hover' },
+                    bgcolor: selectedConversation?.conversation_id === conversation.conversation_id ? 'action.selected' : 'inherit',
+                    borderRadius: '12px !important'
+                  }}
+                  onClick={() => selectConversation(conversation)}
+                >
+                  <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+                    <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                      {conversation.from_number}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary" noWrap>
+                      {conversation.last_message || 'No messages yet'}
+                    </Typography>
+                  </CardContent>
                 </Card>
-                </>
-              ) : (
-                <p>Select a conversation to view messages.</p>
+              ))}
+              {conversations.length === 0 && (
+                <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>
+                  No conversations assigned
+                </Typography>
               )}
             </CardContent>
           </Card>
-        </div>
-      </div>
-    </div>
-      <Dialog open={isComposeDialogOpen} onClose={handleCloseComposeDialog}>
+
+          {/* Messages Panel */}
+          <Card elevation={2} sx={{ minWidth: '400px', flex: 1, display: 'flex', flexDirection: 'column' }}>
+            <CardHeader 
+              title={selectedConversation ? `Messages with ${selectedConversation.from_number}` : 'Messages'}
+              sx={{ 
+                bgcolor: 'info.main', 
+                color: 'info.contrastText',
+                '& .MuiCardHeader-title': { fontWeight: 600 },
+                m: 0
+              }}
+            />
+            <CardContent sx={{ flex: 1, overflow: 'auto', p: 2 }}>
+              {selectedConversation ? (
+                <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                  <Box sx={{ flex: 1, overflow: 'auto', mb: 2 }}>
+                    {conversationMessages.map((msg, index) => {
+                      const isOutbound = msg.direction === "outbound";
+                      return (
+                        <Box
+                          key={index}
+                          sx={{
+                            display: 'flex',
+                            justifyContent: isOutbound ? 'flex-end' : 'flex-start',
+                            mb: 1
+                          }}
+                        >
+                          <Paper
+                            elevation={1}
+                            sx={{
+                              p: 1.5,
+                              maxWidth: '70%',
+                              bgcolor: isOutbound ? 'primary.main' : 'grey.100',
+                              color: isOutbound ? 'primary.contrastText' : 'text.primary',
+                              borderRadius: '16px !important'
+                            }}
+                          >
+                            <Typography variant="body2">
+                              {msg.text_body}
+                            </Typography>
+                          </Paper>
+                        </Box>
+                      );
+                    })}
+                  </Box>
+                  <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-end' }}>
+                    <TextField
+                      fullWidth
+                      variant="outlined"
+                      size="small"
+                      value={newMessage.body}
+                      onChange={(e) => setNewMessage({ ...newMessage, body: e.target.value })}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { handleReply(); e.preventDefault(); } }}
+                      placeholder="Type a message..."
+                      multiline
+                      maxRows={3}
+                    />
+                    <Button 
+                      variant="contained" 
+                      color="primary" 
+                      onClick={handleReply}
+                      sx={{ whiteSpace: 'nowrap' }}
+                    >
+                      Send
+                    </Button>
+                  </Box>
+                </Box>
+              ) : (
+                <Typography variant="body1" color="text.secondary" sx={{ textAlign: 'center', mt: 4 }}>
+                  Select a conversation to view messages
+                </Typography>
+              )}
+            </CardContent>
+          </Card>
+        </Box>
+      </Box>
+      <Dialog open={isComposeDialogOpen} onClose={handleCloseComposeDialog} maxWidth="sm" fullWidth>
         <DialogTitle>Compose New Message</DialogTitle>
-        <DialogContent>
-        <select
-          value={composeAgentNumber}
-          onChange={(e) => setComposeAgentNumber(e.target.value)}
-        >
-          {agentNumberOptions}
-        </select>
-        <br></br>
-          <FormLabel htmlFor="To" style={{ color: '#00a37a' }}>To:</FormLabel>
+        <DialogContent sx={{ pt: 2 }}>
+          <FormControl fullWidth margin="normal" variant="outlined">
+            <InputLabel>From Number</InputLabel>
+            <Select
+              value={composeAgentNumber}
+              onChange={(e) => setComposeAgentNumber(e.target.value)}
+              label="From Number"
+            >
+              {agentNumbers.map((number, index) => (
+                <MenuItem key={index} value={number}>
+                  {number}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          
           <TextField
             autoFocus
-            margin="dense"
+            margin="normal"
+            label="To"
             type="text"
             fullWidth
+            variant="outlined"
             value={newMessage.to}
             onChange={(e) => setNewMessage({ ...newMessage, to: e.target.value })}
-            
+            placeholder="+1234567890"
           />
-          <FormLabel htmlFor="Message Body" style={{ color: '#00a37a' }}>Message Body:</FormLabel>
+          
           <TextField
-            margin="dense"
+            margin="normal"
+            label="Message Body"
             type="text"
             fullWidth
+            variant="outlined"
+            multiline
+            rows={3}
             value={newMessage.body}
             onChange={(e) => setNewMessage({ ...newMessage, body: e.target.value })}
+            placeholder="Type your message here..."
           />
         </DialogContent>
         <DialogActions>
@@ -303,7 +478,7 @@ const SmsPage = ({ isOpen }) => {
           </Button>
         </DialogActions>
       </Dialog>
-    </div>
+    </>
   );
 };
 
