@@ -27,7 +27,7 @@ import { useCallManager } from '../contexts/CallManagerContext';
 
 const UniversalCallModal = () => {
   const callManager = useCallManager();
-  
+
   // Destructure with fallbacks for safety
   const {
     activeCall = null,
@@ -41,22 +41,104 @@ const UniversalCallModal = () => {
     closeModal = () => {}
   } = callManager || {};
 
+  // Debug logging for all state changes
+  console.log('🎭 UniversalCallModal: RENDER STATE:', {
+    activeCall: activeCall?.id,
+    callState,
+    isCallModalOpen,
+    hasCallObject: !!activeCall?.callObject,
+    callObjectActive: activeCall?.callObject?.active,
+    callObjectState: activeCall?.callObject?.state
+  });
+
   const [callDuration, setCallDuration] = useState(0);
   const [isMinimized, setIsMinimized] = useState(false);
 
   // Monitor for call end events and auto-close modal - but only after a delay to prevent race conditions
   useEffect(() => {
+    console.log('💫 UniversalCallModal: useEffect triggered - activeCall:', activeCall?.id, 'callState:', callState, 'isCallModalOpen:', isCallModalOpen);
+
     if (!activeCall && callState === 'IDLE' && isCallModalOpen) {
-      // Add a small delay to prevent closing during call state transitions
+      console.log('💫 UniversalCallModal: Setting timeout to close modal in 500ms (reduced delay)');
+      // Reduced delay for faster modal close on remote hangup
       const timeoutId = setTimeout(() => {
-        console.log('UniversalCallModal: No active call after delay, closing modal');
+        console.log('💫 UniversalCallModal: ✅ Timeout fired - No active call after delay, closing modal');
         closeModal();
         setIsMinimized(false); // Reset minimized state
-      }, 1000);
-      
-      return () => clearTimeout(timeoutId);
+      }, 500);
+
+      return () => {
+        console.log('💫 UniversalCallModal: Cleanup - clearing timeout');
+        clearTimeout(timeoutId);
+      };
+    } else {
+      console.log('💫 UniversalCallModal: Not closing modal - activeCall exists or callState not IDLE or modal not open');
     }
   }, [activeCall, callState, isCallModalOpen, closeModal]);
+
+  // Additional effect to force close modal when call becomes inactive
+  useEffect(() => {
+    if (activeCall && activeCall.callObject) {
+      // Check if WebRTC call object indicates call is no longer active
+      if (!activeCall.callObject.active ||
+          activeCall.callObject.state === 'ended' ||
+          activeCall.callObject.state === 'hangup' ||
+          activeCall.callObject.state === 'terminated') {
+        console.log('💫 UniversalCallModal: WebRTC call object indicates call ended, forcing close');
+        closeModal();
+        setIsMinimized(false);
+      }
+    }
+  }, [activeCall, closeModal]);
+
+  // Emergency force close mechanism
+  const forceCloseModal = () => {
+    console.log('🚨 UniversalCallModal: EMERGENCY FORCE CLOSE TRIGGERED');
+    closeModal();
+    setIsMinimized(false);
+  };
+
+  // Periodic check to ensure modal closes on remote hangup (fallback mechanism)
+  useEffect(() => {
+    if (activeCall && isCallModalOpen) {
+      const checkInterval = setInterval(() => {
+        // Check both WebRTC leg and queue call status
+        const webRTCActive = activeCall.callObject ? activeCall.callObject.active : true;
+        const webRTCState = activeCall.callObject ? activeCall.callObject.state : 'unknown';
+
+        console.log('🕐 UniversalCallModal: Periodic check - type:', activeCall.type, 'WebRTC active:', webRTCActive, 'WebRTC state:', webRTCState, 'callState:', callState);
+
+        // For bridged calls (queue + webrtc), if either leg ends, close modal
+        const webRTCEnded = activeCall.callObject && (
+          !activeCall.callObject.active ||
+          activeCall.callObject.state === 'ended' ||
+          activeCall.callObject.state === 'hangup' ||
+          activeCall.callObject.state === 'terminated' ||
+          activeCall.callObject.state === 'destroyed'
+        );
+
+        const queueCallEnded = callState === 'IDLE' || !activeCall;
+
+        if (webRTCEnded || queueCallEnded) {
+          console.log('🕐 UniversalCallModal: ⚡ PERIODIC CHECK DETECTED CALL END');
+          console.log('🕐   - WebRTC ended:', webRTCEnded);
+          console.log('🕐   - Queue ended:', queueCallEnded);
+          forceCloseModal();
+          clearInterval(checkInterval);
+        }
+      }, 500); // Check every 500ms for faster response
+
+      // Cleanup interval after 5 minutes
+      const cleanup = setTimeout(() => {
+        clearInterval(checkInterval);
+      }, 300000);
+
+      return () => {
+        clearInterval(checkInterval);
+        clearTimeout(cleanup);
+      };
+    }
+  }, [activeCall, isCallModalOpen, callState, closeModal]);
 
   // Removed aggressive server polling that was causing modal to close prematurely on call answer
 
@@ -362,6 +444,17 @@ const UniversalCallModal = () => {
                 </Button>
               </>
             )}
+
+            {/* Emergency Force Close Button */}
+            <Button
+              variant="contained"
+              color="warning"
+              size="small"
+              onClick={forceCloseModal}
+              sx={{ mt: 1 }}
+            >
+              🚨 FORCE CLOSE (DEBUG)
+            </Button>
           </Box>
 
           {/* Additional call controls for active calls */}
@@ -389,10 +482,15 @@ const UniversalCallModal = () => {
     );
   };
 
-  // Don't render if modal is not open and no active calls
-  if (!isCallModalOpen && incomingCalls.length === 0 && !activeCall) {
+  // Don't render if modal is closed and there is no active call
+  // Note: We intentionally ignore incomingCalls here to prevent the modal container
+  // from lingering due to queued items; queue list UI is disabled in this modal.
+  if (!isCallModalOpen && !activeCall) {
+    console.log('💫 UniversalCallModal: Not rendering - modal closed and no calls');
     return null;
   }
+
+  console.log('💫 UniversalCallModal: Rendering modal - activeCall:', activeCall?.id, 'isCallModalOpen:', isCallModalOpen);
 
   // Ensure we have a valid portal target
   const portalTarget = document.getElementById('modal-root') || document.body;

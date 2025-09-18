@@ -49,100 +49,200 @@ export const CallManagerProvider = ({ children }) => {
   
   // WebSocket connection
   const [socket, setSocket] = useState(null);
-  
-  // Initialize socket connection
-  useEffect(() => {
-    if (username) {
-      const socketConnection = io(getWebSocketUrl());
-      
-      socketConnection.on('connect', () => {
-        console.log('CallManager: Connected to websocket');
-        // Identify this agent to the server
-        socketConnection.emit('identify', { username });
-      });
-      
-      // Listen for incoming queue calls
-      socketConnection.on('NEW_CALL', (callData) => {
-        console.log('CallManager: *** WEBSOCKET EVENT RECEIVED: NEW_CALL ***');
-        console.log('CallManager: New queue call received:', callData);
-        handleIncomingQueueCall(callData);
-      });
-      
-      // Listen for call status updates
-      socketConnection.on('CALL_UPDATE', (callData) => {
-        console.log('CallManager: Call update received:', callData);
-        handleCallUpdate(callData);
-      });
-      
-      // Listen for call hangup events
-      socketConnection.on('CALL_HANGUP', (hangupData) => {
-        console.log('CallManager: *** WEBSOCKET EVENT RECEIVED: CALL_HANGUP ***');
-        console.log('CallManager: Call hangup received:', hangupData);
-        handleCallHangup(hangupData);
-      });
-      
-      // Listen for call accepted events (targeted to specific agent)
-      socketConnection.on('CALL_ACCEPTED', (callData) => {
-        console.log('CallManager: *** WEBSOCKET EVENT RECEIVED: CALL_ACCEPTED ***');
-        console.log('CallManager: Call accepted by this agent:', callData);
-        handleCallAccepted(callData);
-      });
-      
-      // Listen for transfer events
-      socketConnection.on('TRANSFER_INITIATED', (transferData) => {
-        console.log('CallManager: *** WEBSOCKET EVENT RECEIVED: TRANSFER_INITIATED ***');
-        console.log('CallManager: Transfer initiated:', transferData);
-      });
-      
-      socketConnection.on('TRANSFER_COMPLETED', (transferData) => {
-        console.log('CallManager: *** WEBSOCKET EVENT RECEIVED: TRANSFER_COMPLETED ***');
-        console.log('CallManager: Transfer completed:', transferData);
-        handleTransferCompleted(transferData);
-      });
-      
-      socketConnection.on('TRANSFER_FAILED', (transferData) => {
-        console.log('CallManager: *** WEBSOCKET EVENT RECEIVED: TRANSFER_FAILED ***');
-        console.log('CallManager: Transfer failed:', transferData);
-      });
 
-      // Add debugging for websocket connection
-      socketConnection.on('connect', () => {
-        console.log('CallManager: *** WEBSOCKET CONNECTED SUCCESSFULLY ***');
-        console.log('CallManager: Socket ID:', socketConnection.id);
-      });
-      
-      socketConnection.on('disconnect', (reason) => {
-        console.log('CallManager: *** WEBSOCKET DISCONNECTED ***');
-        console.log('CallManager: Disconnect reason:', reason);
-      });
-      
-      socketConnection.on('connect_error', (error) => {
-        console.log('CallManager: *** WEBSOCKET CONNECTION ERROR ***');
-        console.log('CallManager: Error:', error);
-      });
+  // Helper: build active call object from DB session + legs
+  const buildActiveCallFromSession = useCallback((session, legs) => {
+    try {
+      if (!session || !legs) return null;
+      const agentLeg = legs.find(l => l.leg_type === 'agent' && l.status !== 'ended');
+      const customerLeg = legs.find(l => l.leg_type === 'customer');
+      const state = session.status === 'active' ? 'ACTIVE' : (session.status === 'queued' ? 'INCOMING' : 'IDLE');
 
-      // Catch-all event listener to debug all websocket events
-      if (socketConnection.onAny) {
-        socketConnection.onAny((eventName, ...args) => {
-          console.log(`CallManager: *** WEBSOCKET EVENT: ${eventName} ***`);
-          console.log('CallManager: Event args:', args);
-        });
-      }
-
-      
-      setSocket(socketConnection);
-      
-      return () => {
-        socketConnection.disconnect();
+      return {
+        id: agentLeg?.call_control_id || session.sessionKey,
+        type: 'queue',
+        from: session.from_number || 'Unknown',
+        to: session.to_number || '',
+        timestamp: new Date(session.started_at || Date.now()),
+        state,
+        callControlId: agentLeg?.call_control_id || null,
+        customerCallId: session.sessionKey,
+        bridgeId: session.sessionKey,
+        direction: 'inbound'
       };
+    } catch (err) {
+      console.error('CallManager: buildActiveCallFromSession error:', err);
+      return null;
     }
-  }, [username, handleCallAccepted, handleCallHangup, handleCallUpdate, handleIncomingQueueCall, handleTransferCompleted]);
+  }, []);
+  
+  // Initialize socket connection (once per username)
+  useEffect(() => {
+    if (!username) return;
+
+    const socketConnection = io(getWebSocketUrl());
+
+    socketConnection.on('connect', () => {
+      console.log('CallManager: Connected to websocket');
+      // Identify this agent to the server
+      socketConnection.emit('identify', { username });
+      console.log('CallManager: *** WEBSOCKET CONNECTED SUCCESSFULLY ***');
+      console.log('CallManager: Socket ID:', socketConnection.id);
+
+      // On connect, reconcile with server DB for any active session
+      (async () => {
+        try {
+          const data = await apiService.getMyActiveSession();
+          console.log('CallManager: Reconcile my-active-session:', data);
+          if (data && data.session && data.legs && data.legs.length > 0) {
+            const active = buildActiveCallFromSession(data.session, data.legs);
+            if (active) {
+              setActiveCall(active);
+              setCallState(active.state || 'ACTIVE');
+              setModalType('queue');
+              setIsCallModalOpen(true);
+              console.log('CallManager: Restored active call from session');
+            }
+          } else {
+            // Ensure modal closed if no session
+            setActiveCall(null);
+            setCallState('IDLE');
+            setIsCallModalOpen(false);
+            setModalType(null);
+            console.log('CallManager: No active session found; ensured modal closed');
+          }
+        } catch (e) {
+          console.error('CallManager: Error reconciling my-active-session:', e);
+        }
+      })();
+    });
+
+    socketConnection.on('disconnect', (reason) => {
+      console.log('CallManager: *** WEBSOCKET DISCONNECTED ***');
+      console.log('CallManager: Disconnect reason:', reason);
+    });
+
+    socketConnection.on('connect_error', (error) => {
+      console.log('CallManager: *** WEBSOCKET CONNECTION ERROR ***');
+      console.log('CallManager: Error:', error);
+    });
+
+    // Catch-all event listener to debug all websocket events
+    if (socketConnection.onAny) {
+      socketConnection.onAny((eventName, ...args) => {
+        console.log(`CallManager: *** WEBSOCKET EVENT: ${eventName} ***`);
+        console.log('CallManager: Event args:', args);
+      });
+    }
+
+    setSocket(socketConnection);
+
+    return () => {
+      socketConnection.disconnect();
+    };
+  }, [username]);
+
+  // Bind/unbind event handlers without reconnecting socket
+  useEffect(() => {
+    if (!socket) return;
+
+    const onNewCall = (callData) => {
+      console.log('CallManager: *** WEBSOCKET EVENT RECEIVED: NEW_CALL ***');
+      console.log('CallManager: New queue call received:', callData);
+      handleIncomingQueueCall(callData);
+    };
+
+    const onCallUpdate = (callData) => {
+      console.log('CallManager: Call update received:', callData);
+      handleCallUpdate(callData);
+    };
+
+    const onCallHangup = (hangupData) => {
+      console.log('🚨 CallManager: *** WEBSOCKET EVENT RECEIVED: CALL_HANGUP ***');
+      console.log('🚨 CallManager: Raw hangup data received:', JSON.stringify(hangupData, null, 2));
+      console.log('🚨 CallManager: About to call handleCallHangup...');
+      handleCallHangup(hangupData);
+    };
+
+    const onCallAccepted = (callData) => {
+      console.log('CallManager: *** WEBSOCKET EVENT RECEIVED: CALL_ACCEPTED ***');
+      console.log('CallManager: Call accepted by this agent:', callData);
+      handleCallAccepted(callData);
+    };
+
+    const onCallBridged = async (data) => {
+      console.log('CallManager: *** WEBSOCKET EVENT RECEIVED: CALL_BRIDGED ***');
+      console.log('CallManager: CALL_BRIDGED payload:', data);
+      // Reconcile from DB to ensure unified state for this agent
+      try {
+        const result = await apiService.getMyActiveSession();
+        if (result && result.session && result.legs && result.legs.length > 0) {
+          const active = buildActiveCallFromSession(result.session, result.legs);
+          if (active) {
+            setActiveCall(active);
+            setCallState(active.state || 'ACTIVE');
+            setModalType('queue');
+            setIsCallModalOpen(true);
+            console.log('CallManager: Reconciled active call after CALL_BRIDGED');
+          }
+        }
+      } catch (err) {
+        console.error('CallManager: Error reconciling after CALL_BRIDGED:', err);
+      }
+    };
+
+    const onTransferInitiated = (transferData) => {
+      console.log('CallManager: *** WEBSOCKET EVENT RECEIVED: TRANSFER_INITIATED ***');
+      console.log('CallManager: Transfer initiated:', transferData);
+    };
+
+    const onTransferCompleted = (transferData) => {
+      console.log('CallManager: *** WEBSOCKET EVENT RECEIVED: TRANSFER_COMPLETED ***');
+      console.log('CallManager: Transfer completed:', transferData);
+      handleTransferCompleted(transferData);
+    };
+
+    const onTransferFailed = (transferData) => {
+      console.log('CallManager: *** WEBSOCKET EVENT RECEIVED: TRANSFER_FAILED ***');
+      console.log('CallManager: Transfer failed:', transferData);
+    };
+
+    // Ensure previous listeners are removed before adding
+    socket.off('NEW_CALL');
+    socket.off('CALL_UPDATE');
+    socket.off('CALL_HANGUP');
+    socket.off('CALL_ACCEPTED');
+    socket.off('TRANSFER_INITIATED');
+    socket.off('TRANSFER_COMPLETED');
+    socket.off('TRANSFER_FAILED');
+    socket.off('CALL_BRIDGED');
+
+    socket.on('NEW_CALL', onNewCall);
+    socket.on('CALL_UPDATE', onCallUpdate);
+    socket.on('CALL_HANGUP', onCallHangup);
+    socket.on('CALL_ACCEPTED', onCallAccepted);
+    socket.on('TRANSFER_INITIATED', onTransferInitiated);
+    socket.on('TRANSFER_COMPLETED', onTransferCompleted);
+    socket.on('TRANSFER_FAILED', onTransferFailed);
+    socket.on('CALL_BRIDGED', onCallBridged);
+
+    return () => {
+      socket.off('NEW_CALL', onNewCall);
+      socket.off('CALL_UPDATE', onCallUpdate);
+      socket.off('CALL_HANGUP', onCallHangup);
+      socket.off('CALL_ACCEPTED', onCallAccepted);
+      socket.off('TRANSFER_INITIATED', onTransferInitiated);
+      socket.off('TRANSFER_COMPLETED', onTransferCompleted);
+      socket.off('TRANSFER_FAILED', onTransferFailed);
+      socket.off('CALL_BRIDGED', onCallBridged);
+    };
+  }, [socket, handleIncomingQueueCall, handleCallUpdate, handleCallHangup, handleCallAccepted, handleTransferCompleted, buildActiveCallFromSession]);
 
   // Handle call accepted event (targeted to the agent who accepted)
   const handleCallAccepted = useCallback((callData) => {
-    console.log('CallManager: *** CALL_ACCEPTED EVENT RECEIVED ***');
-    console.log('CallManager: Handling call accepted event:', JSON.stringify(callData, null, 2));
-    
+    console.log('🎯 CallManager: *** CALL_ACCEPTED EVENT RECEIVED ***');
+    console.log('🎯 CallManager: Handling call accepted event:', JSON.stringify(callData, null, 2));
+
     // Create active call object for the accepting agent
     const acceptedCall = {
       id: callData.agentCallId,
@@ -151,25 +251,28 @@ export const CallManagerProvider = ({ children }) => {
       to: '',
       timestamp: new Date(callData.timestamp),
       state: 'ACTIVE',
-      callControlId: callData.agentCallId,
-      customerCallId: callData.customerCallId,
-      bridgeId: callData.bridgeId, // Also store bridgeId for hangup matching
+      callControlId: callData.agentCallId,           // Agent/WebRTC leg ID
+      customerCallId: callData.customerCallId,       // Customer/Queue leg ID
+      bridgeId: callData.bridgeId,                   // Bridge ID (same as customerCallId)
       direction: 'inbound'
     };
-    
-    console.log('CallManager: Created active call object:', JSON.stringify(acceptedCall, null, 2));
-    
+
+    console.log('🎯 CallManager: Created active call object with IDs:');
+    console.log('🎯   - Agent/WebRTC ID (callControlId):', callData.agentCallId);
+    console.log('🎯   - Customer/Queue ID (customerCallId):', callData.customerCallId);
+    console.log('🎯   - Bridge ID (bridgeId):', callData.bridgeId);
+
     setActiveCall(acceptedCall);
     setCallState('ACTIVE');
     setModalType('queue');
     setIsCallModalOpen(true);
-    
+
     // Remove from incoming calls if it exists
-    setIncomingCalls(prev => prev.filter(call => 
+    setIncomingCalls(prev => prev.filter(call =>
       call.callControlId !== callData.customerCallId
     ));
-    
-    console.log('CallManager: Active call set for accepted call, modal opened');
+
+    console.log('🎯 CallManager: Active call set for accepted call, modal opened');
   }, []);
   
   // Handle transfer completed event
@@ -245,19 +348,23 @@ export const CallManagerProvider = ({ children }) => {
   // Handle WebRTC call notifications (from existing ModalContext logic)
   const handleWebRTCCall = useCallback((call, state) => {
     // Extract call control ID from multiple possible locations
-    const callControlId = call.options?.telnyxCallControlId || 
-                         call.options?.callControlId || 
+    const callControlId = call.options?.telnyxCallControlId ||
+                         call.options?.callControlId ||
                          call.telnyxCallControlId ||
                          call.callControlId ||
                          call.id;
-    
-    console.log('CallManager: Processing WebRTC call with state:', state);
-    console.log('CallManager: Call control ID found:', callControlId);
-    console.log('CallManager: Call object details:', {
+
+    console.log('📞 CallManager: Processing WebRTC call with state:', state);
+    console.log('📞 CallManager: Call control ID found:', callControlId);
+    console.log('📞 CallManager: Call object details:', {
       id: call.id,
       direction: call.direction,
-      options: call.options
+      options: call.options,
+      state: call.state,
+      active: call.active
     });
+    console.log('📞 CallManager: Current modal open:', isCallModalOpen);
+    console.log('📞 CallManager: Current active call:', activeCall?.id);
 
     const callData = {
       id: call.id || Date.now().toString(),
@@ -283,10 +390,36 @@ export const CallManagerProvider = ({ children }) => {
       setActiveCall(callData);
       setCallState('ACTIVE');
       setIsCallModalOpen(true);
-    } else if (state === 'HANGUP' || state === 'ENDED' || state === 'TERMINATED' || state === 'DESTROYED' || state === 'FAILED') {
-      console.log('CallManager: Handling call end state:', state);
-      console.log('CallManager: Call data for ending call:', callData);
-      handleCallEnd(callData.id);
+    } else if (state === 'HANGUP' || state === 'ENDED' || state === 'TERMINATED' || state === 'DESTROYED' || state === 'DESTROY' || state === 'FAILED') {
+      console.log('🔴 CallManager: Handling call end state:', state);
+      console.log('🔴 CallManager: Call data for ending call:', callData);
+      console.log('🔴 CallManager: About to call handleCallEnd with ID:', callData.id);
+
+      // Force immediate UI cleanup for remote hangup detection
+      // Case 1: WebRTC call ID matches currently active call
+      if (activeCall && activeCall.id === callData.id) {
+        console.log('🔴 CallManager: ✅ IMMEDIATE REMOTE HANGUP CLEANUP - Matching call ID');
+
+        if (activeCall) {
+          setCallHistory(prev => [...prev, { ...activeCall, endTime: new Date() }]);
+        }
+
+        setActiveCall(null);
+        setCallState('IDLE');
+        setIsCallModalOpen(false);
+        setModalType(null);
+        console.log('🔴 CallManager: ✅ REMOTE HANGUP - Modal forcefully closed');
+      } else {
+        // Case 2: Non-matching ID (bridged scenarios). Always ensure UI cleanup regardless of modal state.
+        console.log('🔴 CallManager: ⚠️ Non-matching ID; performing unconditional cleanup');
+        if (activeCall) {
+          setCallHistory(prev => [...prev, { ...activeCall, endTime: new Date() }]);
+        }
+        setActiveCall(null);
+        setCallState('IDLE');
+        setIsCallModalOpen(false);
+        setModalType(null);
+      }
     } else if (state === 'DIALING') {
       console.log('CallManager: Call dialing');
       setActiveCall(callData);
@@ -294,7 +427,7 @@ export const CallManagerProvider = ({ children }) => {
       setModalType('webrtc');
       setIsCallModalOpen(true);
     }
-  }, [activeCall, handleCallEnd]);
+  }, [activeCall]);
   
   // Handle call updates
   const handleCallUpdate = useCallback((callData) => {
@@ -306,61 +439,115 @@ export const CallManagerProvider = ({ children }) => {
   
   // Handle call hangup from webhook - only for specific matching calls
   const handleCallHangup = useCallback((hangupData) => {
-    console.log('CallManager: *** CALL_HANGUP EVENT RECEIVED ***');
-    console.log('CallManager: Hangup data:', JSON.stringify(hangupData, null, 2));
-    console.log('CallManager: Current modal open:', isCallModalOpen);
-    console.log('CallManager: Current active call full object:', JSON.stringify(activeCall, null, 2));
-    
-    const hangupCallControlId = hangupData.callControlId;
-    console.log('CallManager: Hangup call control ID (string):', `"${hangupCallControlId}"`);
-    
-    if (activeCall) {
-      console.log('CallManager: Active call agent call ID (string):', `"${activeCall.callControlId}"`);
-      console.log('CallManager: Active call bridge ID (string):', `"${activeCall.bridgeId}"`);
-      console.log('CallManager: Active call customer call ID (string):', `"${activeCall.customerCallId}"`);
-      
-      // Detailed comparison logging
-      console.log('CallManager: ID Comparisons:');
-      console.log('  - Agent call match:', activeCall.callControlId === hangupCallControlId, `"${activeCall.callControlId}" === "${hangupCallControlId}"`);
-      console.log('  - Bridge ID match:', activeCall.bridgeId === hangupCallControlId, `"${activeCall.bridgeId}" === "${hangupCallControlId}"`);
-      console.log('  - Customer ID match:', activeCall.customerCallId === hangupCallControlId, `"${activeCall.customerCallId}" === "${hangupCallControlId}"`);
-    }
-    
-    // Check if hangup is for current active call by matching:
-    // 1. Agent call ID (callControlId)
-    // 2. Customer call ID (bridgeId, customerCallId) 
-    // 3. Bridge ID (bridgeId)
-    const isActiveCallHangup = activeCall && (
-      activeCall.callControlId === hangupCallControlId || 
-      activeCall.bridgeId === hangupCallControlId ||
-      activeCall.customerCallId === hangupCallControlId
-    );
-    
-    console.log('CallManager: Is active call hangup?', isActiveCallHangup);
-    
-    if (isActiveCallHangup) {
-      console.log('CallManager: ✅ Hangup matches active call, closing modal');
-      
-      // Add current call to history
-      setCallHistory(prev => [...prev, { ...activeCall, endTime: new Date() }]);
-      
-      // Reset all call state
+    console.log('🔥 CallManager: *** CALL_HANGUP EVENT RECEIVED - QUEUE LEG ENDED ***');
+
+    // IMMEDIATE EMERGENCY FORCE CLOSE - broadened to any CALL_HANGUP while modal is open
+    // This protects against ID mismatches between legs in bridged calls
+    if (isCallModalOpen && activeCall && activeCall.type === 'queue') {
+      console.log('🔥 CallManager: 🚨 EMERGENCY FORCE CLOSE (any CALL_HANGUP while queue modal open)');
       setActiveCall(null);
       setCallState('IDLE');
       setIsCallModalOpen(false);
       setModalType(null);
-      
-      console.log('CallManager: Modal closed and call state reset');
-    } else if (activeCall) {
-      console.log('CallManager: ❌ Hangup does not match active call, modal stays open');
-    } else {
-      console.log('CallManager: No active call to compare against');
+      console.log('🔥 CallManager: 🚨 MODAL CLOSED via emergency rule');
+      return;
     }
-    
+    console.log('🔥 CallManager: Hangup data:', JSON.stringify(hangupData, null, 2));
+    console.log('🔥 CallManager: Current modal open:', isCallModalOpen);
+    console.log('🔥 CallManager: Current active call full object:', JSON.stringify(activeCall, null, 2));
+
+    const hangupCallControlId = hangupData.callControlId;
+    console.log('🔥 CallManager: Hangup call control ID (string):', `"${hangupCallControlId}"`);
+
+    if (activeCall) {
+      console.log('🔥 CallManager: Active call agent call ID (string):', `"${activeCall.callControlId}"`);
+      console.log('🔥 CallManager: Active call bridge ID (string):', `"${activeCall.bridgeId}"`);
+      console.log('🔥 CallManager: Active call customer call ID (string):', `"${activeCall.customerCallId}"`);
+
+      // Detailed comparison logging
+      console.log('🔥 CallManager: ID Comparisons:');
+      console.log('  - Agent call match:', activeCall.callControlId === hangupCallControlId, `"${activeCall.callControlId}" === "${hangupCallControlId}"`);
+      console.log('  - Bridge ID match:', activeCall.bridgeId === hangupCallControlId, `"${activeCall.bridgeId}" === "${hangupCallControlId}"`);
+      console.log('  - Customer ID match:', activeCall.customerCallId === hangupCallControlId, `"${activeCall.customerCallId}" === "${hangupCallControlId}"`);
+
+      // Check WebRTC outbound leg IDs
+      if (activeCall.callObject && activeCall.callObject.options) {
+        console.log('🔥 CallManager: WebRTC Call Object IDs:');
+        console.log('  - WebRTC telnyxCallControlId:', activeCall.callObject.options.telnyxCallControlId);
+        console.log('  - WebRTC callControlId:', activeCall.callObject.options.callControlId);
+        console.log('  - WebRTC call.id:', activeCall.callObject.id);
+        console.log('  - WebRTC outbound leg match (telnyx):', activeCall.callObject.options.telnyxCallControlId === hangupCallControlId);
+        console.log('  - WebRTC outbound leg match (callControl):', activeCall.callObject.options.callControlId === hangupCallControlId);
+        console.log('  - WebRTC outbound leg match (id):', activeCall.callObject.id === hangupCallControlId);
+      }
+    }
+
+    // Check if hangup is for current active call by matching:
+    // 1. Agent call ID (callControlId)
+    // 2. Customer call ID (bridgeId, customerCallId)
+    // 3. Bridge ID (bridgeId)
+    // 4. WebRTC outbound leg (for bridged calls, the WebRTC leg ending should also close modal)
+    const isActiveCallHangup = activeCall && (
+      activeCall.callControlId === hangupCallControlId ||
+      activeCall.bridgeId === hangupCallControlId ||
+      activeCall.customerCallId === hangupCallControlId ||
+      // Also check if this is a WebRTC outbound leg of a bridged call
+      (activeCall.type === 'queue' && activeCall.callObject &&
+       activeCall.callObject.options &&
+       (activeCall.callObject.options.telnyxCallControlId === hangupCallControlId ||
+        activeCall.callObject.options.callControlId === hangupCallControlId ||
+        activeCall.callObject.id === hangupCallControlId))
+    );
+
+    console.log('🔥 CallManager: Is active call hangup?', isActiveCallHangup);
+
+    // EMERGENCY: If we have ANY hangup event while modal is open, consider closing it
+    // This is a safety net for bridged calls where ID matching might be complex
+    // UPDATED: Don't require activeCall since it might be null due to race conditions
+    const shouldForceClose = isCallModalOpen && !!hangupData; // broaden: any hangup event while modal open
+
+    console.log('🔥 CallManager: Should force close (emergency)?', shouldForceClose);
+    console.log('🔥   - Has active call:', !!activeCall);
+    console.log('🔥   - Modal is open:', isCallModalOpen);
+    console.log('🔥   - Normal clearing:', hangupData.hangupCause === 'normal_clearing');
+    console.log('🔥   - Caller hangup:', hangupData.hangupSource === 'caller');
+
+    if (isActiveCallHangup || shouldForceClose) {
+      console.log('🔥 CallManager: ✅ QUEUE LEG ENDED - Hangup matches active call OR emergency force close triggered');
+
+      // For bridged calls, also hangup the WebRTC leg if it exists
+      if (activeCall && activeCall.callObject && typeof activeCall.callObject.hangup === 'function') {
+        console.log('🔥 CallManager: Also hanging up WebRTC leg');
+        try {
+          activeCall.callObject.hangup();
+        } catch (webrtcError) {
+          console.error('🔥 CallManager: Error hanging up WebRTC leg:', webrtcError);
+        }
+      }
+
+      // Add current call to history if activeCall exists
+      if (activeCall) {
+        setCallHistory(prev => [...prev, { ...activeCall, endTime: new Date() }]);
+      }
+
+      // Reset all call state IMMEDIATELY - FORCE CLOSE REGARDLESS
+      console.log('🔥 CallManager: 🚨 EMERGENCY FORCE CLOSE - Queue hangup detected');
+      setActiveCall(null);
+      setCallState('IDLE');
+      setIsCallModalOpen(false);
+      setModalType(null);
+
+      console.log('🔥 CallManager: ✅ EMERGENCY FORCE CLOSE COMPLETED - Modal should be closed now');
+    } else if (activeCall) {
+      console.log('🔥 CallManager: ❌ Hangup does not match active call, modal stays open');
+    } else {
+      console.log('🔥 CallManager: No active call to compare against');
+    }
+
     // Always clean up matching calls from incoming calls list
     setIncomingCalls(prev => prev.filter(call => call.callControlId !== hangupCallControlId));
-    
-    console.log('CallManager: Call hangup processing complete');
+
+    console.log('🔥 CallManager: Queue leg hangup processing complete');
   }, [activeCall, isCallModalOpen]);
   
   // Accept queue call
@@ -467,77 +654,96 @@ export const CallManagerProvider = ({ children }) => {
   
   // Handle call end
   const handleCallEnd = useCallback((callId) => {
-    console.log('CallManager: Handling call end for callId:', callId);
-    console.log('CallManager: Current active call:', activeCall);
-    
+    console.log('🚨 CallManager: handleCallEnd called for callId:', callId);
+    console.log('🚨 CallManager: Current active call details:', {
+      id: activeCall?.id,
+      type: activeCall?.type,
+      state: activeCall?.state,
+      modalOpen: isCallModalOpen
+    });
+
     setIncomingCalls(prev => prev.filter(c => c.id !== callId));
-    
+
     if (activeCall && activeCall.id === callId) {
-      console.log('CallManager: Ending active call - this is a remote hangup');
-      
+      console.log('🚨 CallManager: ✅ MATCH - Ending active call - this is a remote hangup');
+
       // Properly cleanup WebRTC call object if it exists
       if (activeCall.callObject && typeof activeCall.callObject.hangup === 'function') {
         try {
-          console.log('CallManager: Calling hangup on WebRTC call object');
+          console.log('🚨 CallManager: Calling hangup on WebRTC call object');
           activeCall.callObject.hangup();
         } catch (error) {
-          console.error('CallManager: Error hanging up call object:', error);
+          console.error('🚨 CallManager: Error hanging up call object:', error);
         }
       }
-      
+
       // Add to history
       setCallHistory(prev => [...prev, { ...activeCall, endTime: new Date() }]);
-      
+
       // Reset active call state
+      console.log('🚨 CallManager: Setting activeCall to null');
       setActiveCall(null);
+      console.log('🚨 CallManager: Setting callState to IDLE');
       setCallState('IDLE');
+      console.log('🚨 CallManager: Setting isCallModalOpen to false');
       setIsCallModalOpen(false);
+      console.log('🚨 CallManager: Setting modalType to null');
       setModalType(null);
-      
-      console.log('CallManager: Remote hangup - Call cleanup completed');
-      
+
+      console.log('🚨 CallManager: ✅ Remote hangup - Call cleanup completed - MODAL SHOULD BE CLOSED');
+
       // Queue calls remain in the incoming calls list for manual acceptance
       // No auto-opening of next calls
     } else {
-      console.log('CallManager: Call end event for non-active call or call not found');
+      console.log('🚨 CallManager: ❌ NO MATCH - Call end event for non-active call or call not found');
+      console.log('🚨 CallManager: Active call ID:', activeCall?.id, 'vs End call ID:', callId);
     }
-  }, [activeCall]);
+  }, [activeCall, isCallModalOpen]);
 
   // Hang up active call
   const hangUpCall = useCallback(async (call = activeCall) => {
-    console.log('CallManager: hangUpCall called for call:', call?.id);
+    console.log('🎯 CallManager: hangUpCall called for call:', call?.id, 'type:', call?.type);
     try {
       if (call) {
         // For WebRTC calls, call hangup on the call object first
         if (call.type === 'webrtc' && call.callObject && typeof call.callObject.hangup === 'function') {
-          console.log('CallManager: Calling hangup on WebRTC call object');
-          call.callObject.hangup();
+          console.log('🎯 CallManager: Calling hangup on WebRTC call object');
+          try {
+            call.callObject.hangup();
+          } catch (webrtcError) {
+            console.error('🎯 CallManager: Error hanging up WebRTC call object:', webrtcError);
+          }
         }
-        
+
         // For queue calls (Telnyx calls), make API call to hang up via server
         if (call.type === 'queue' && call.callControlId) {
-          console.log('CallManager: Hanging up queue call via API, callControlId:', call.callControlId);
+          console.log('🎯 CallManager: Hanging up queue call via API, callControlId:', call.callControlId);
           try {
             const result = await apiService.hangUpCall(call.callControlId);
-            console.log('CallManager: Hangup API result:', result);
+            console.log('🎯 CallManager: Hangup API result:', result);
           } catch (apiError) {
-            console.error('CallManager: Error calling hangup API:', apiError);
+            console.error('🎯 CallManager: Error calling hangup API:', apiError);
+            // Check if this is a 422 "Call has already ended" error
+            if (apiError.response?.status === 422) {
+              console.log('🎯 CallManager: Call already ended remotely - this is expected for remote hangup');
+            }
             // Continue with UI cleanup even if API call fails
           }
         }
-        
+
         // Always call handleCallEnd to clean up UI state
-        console.log('CallManager: Calling handleCallEnd');
+        console.log('🎯 CallManager: Calling handleCallEnd for UI cleanup');
         handleCallEnd(call.id);
       } else {
-        console.log('CallManager: No call to hang up');
+        console.log('🎯 CallManager: No call to hang up');
       }
-      
+
       return { success: true };
     } catch (error) {
-      console.error('CallManager: Error hanging up call:', error);
+      console.error('🎯 CallManager: Error hanging up call:', error);
       // Even if there's an error, try to clean up the UI
       if (call) {
+        console.log('🎯 CallManager: Error occurred, still calling handleCallEnd for cleanup');
         handleCallEnd(call.id);
       }
       return { success: false, error: error.message };
@@ -568,7 +774,13 @@ export const CallManagerProvider = ({ children }) => {
   const closeModal = useCallback(() => {
     setIsCallModalOpen(false);
     setModalType(null);
-  }, []);
+    // Ensure UI clears when call is already idle/ended
+    setTimeout(() => {
+      if (callState === 'IDLE') {
+        setActiveCall(null);
+      }
+    }, 0);
+  }, [callState]);
   
   // Open modal manually
   const openModal = useCallback((type = 'queue') => {

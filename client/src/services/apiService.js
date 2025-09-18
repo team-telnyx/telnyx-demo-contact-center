@@ -88,6 +88,11 @@ class ApiService {
     return response.data;
   }
 
+  async getMyActiveSession() {
+    const response = await this.client.get('/voice/my-active-session');
+    return response.data; // { session, legs } or { session: null }
+  }
+
   async acceptCall(callData) {
     const response = await this.client.post('/voice/accept-call', callData);
     return response.data;

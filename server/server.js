@@ -14,6 +14,9 @@ const fs = require('fs');
 const https = require('https');
 const seedDatabase = require('./seeds/seed');
 const { initWebSocket } = require('./routes/websocket');
+// Ensure models are registered before sync
+require('./models/CallSession');
+require('./models/CallLeg');
 
 const app = express();
 

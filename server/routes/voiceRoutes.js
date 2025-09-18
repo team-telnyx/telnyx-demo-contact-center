@@ -1,8 +1,11 @@
 require('dotenv').config();
 const express = require('express');
 const Voice = require('../models/Voice');
+const { Op } = require('sequelize');
 const telnyxService = require('../services/telnyxService');
 const router = express.Router();
+const CallSession = require('../models/CallSession');
+const CallLeg = require('../models/CallLeg');
 const axios = require('axios');
 const { broadcast, broadcastToAgent, broadcastToAcceptingSocket } = require('./websocket'); 
 
@@ -36,7 +39,7 @@ initializeTelnyxClient();
 
 //================================================ ADD INBOUND CALL TO QUEUE ================================================
 
-router.post('/webhook', express.json(), (req, res) => {
+router.post('/webhook', express.json(), async (req, res) => {
   console.log('=== WEBHOOK RECEIVED ===');
   console.log('Full webhook body:', JSON.stringify(req.body, null, 2));
   
@@ -66,6 +69,36 @@ router.post('/webhook', express.json(), (req, res) => {
     }).catch(error => {
       console.error('Error saving call to database:', error);
     });
+
+    // Persist session + customer leg
+    try {
+      const sessionKey = data.payload.call_control_id;
+      const [session] = await CallSession.findOrCreate({
+        where: { sessionKey },
+        defaults: {
+          status: 'ringing',
+          from_number: data.payload.from,
+          to_number: data.payload.to,
+          direction: data.payload.direction,
+          started_at: new Date(),
+        },
+      });
+
+      await CallLeg.findOrCreate({
+        where: { call_control_id: sessionKey },
+        defaults: {
+          sessionKey,
+          leg_type: 'customer',
+          direction: data.payload.direction,
+          status: 'ringing',
+          start_time: new Date(),
+        },
+      });
+
+      console.log('DB: CallSession + customer CallLeg upserted');
+    } catch (e) {
+      console.error('DB error creating session/leg for call.initiated:', e);
+    }
     
     // Check for available agents but still answer and enqueue for now
     const User = require('../models/User');
@@ -125,6 +158,10 @@ router.post('/webhook', express.json(), (req, res) => {
   if (data.event_type === 'call.enqueued') {
     broadcast('NEW_CALL', data);
     console.log('Call Enqueued:', data.payload.call_control_id);
+    try {
+      await CallSession.update({ status: 'queued' }, { where: { sessionKey: data.payload.call_control_id } });
+      await CallLeg.update({ status: 'ringing' }, { where: { call_control_id: data.payload.call_control_id } });
+    } catch (e) { console.error('DB error updating status to queued:', e); }
     if (telnyxClient) {
       telnyxClient.calls.playback_start(data.payload.call_control_id, {audio_url: 'http://com.twilio.music.classical.s3.amazonaws.com/MARKOVICHAMP-Borghestral.mp3'});
     }
@@ -153,6 +190,17 @@ router.post('/webhook', express.json(), (req, res) => {
       hangupCause: data.payload.hangup_cause,
       hangupSource: data.payload.hangup_source
     });
+
+    // Update DB leg + session
+    try {
+      await CallLeg.update({
+        status: 'ended',
+        end_time: new Date(),
+        hangup_cause: data.payload.hangup_cause,
+        hangup_source: data.payload.hangup_source,
+      }, { where: { call_control_id: callControlId } });
+      await CallSession.update({ status: 'ended', ended_at: new Date() }, { where: { sessionKey: callControlId } });
+    } catch (e) { console.error('DB error ending customer leg/session:', e); }
     
     console.log('Call marked as ended in activeCalls tracking:', callControlId);
     
@@ -160,7 +208,9 @@ router.post('/webhook', express.json(), (req, res) => {
     const hangupData = {
       callControlId: data.payload.call_control_id,
       hangupCause: data.payload.hangup_cause,
-      hangupSource: data.payload.hangup_source
+      hangupSource: data.payload.hangup_source,
+      sessionKey: data.payload.call_control_id,
+      legType: 'customer'
     };
     
     console.log('Broadcasting CALL_HANGUP:', hangupData);
@@ -198,8 +248,15 @@ router.post('/webhook', express.json(), (req, res) => {
     
     broadcast('CALL_BRIDGED', {
       callControlId: callControlId,
+      sessionKey: callControlId,
+      legType: 'customer',
       payload: data.payload
     });
+
+    // Mark session active in DB
+    try {
+      await CallSession.update({ status: 'active' }, { where: { sessionKey: callControlId } });
+    } catch (e) { console.error('DB error marking session active:', e); }
   }
   
   res.status(200).send('OK');
@@ -468,6 +525,7 @@ router.post('/outbound', express.json(), async (req, res) => {
           const targetedSuccess = broadcastToAcceptingSocket(callControlId_Bridge, 'CALL_ACCEPTED', {
             callControlId: callControl,
             bridgeId: callControlId_Bridge,
+            sessionKey: callControlId_Bridge,
             customerCallId: callControlId_Bridge,
             agentCallId: callControl,
             from: callData.from_number,
@@ -481,6 +539,7 @@ router.post('/outbound', express.json(), async (req, res) => {
             const fallbackSuccess = broadcastToAgent(callData.accept_agent, 'CALL_ACCEPTED', {
               callControlId: callControl,
               bridgeId: callControlId_Bridge,
+              sessionKey: callControlId_Bridge,
               customerCallId: callControlId_Bridge,
               agentCallId: callControl,
               from: callData.from_number,
@@ -493,7 +552,8 @@ router.post('/outbound', express.json(), async (req, res) => {
           console.log('No accept_agent found, broadcasting to all');
           broadcast('CALL_ACCEPTED', {
             callControlId: callControl,
-            bridgeId: callControlId_Bridge
+            bridgeId: callControlId_Bridge,
+            sessionKey: callControlId_Bridge
           });
         }
         
@@ -535,7 +595,9 @@ router.post('/outbound', express.json(), async (req, res) => {
       const agentHangupData = {
         callControlId: callControl,
         hangupCause: req.body.data.payload.hangup_cause,
-        hangupSource: 'agent'
+        hangupSource: 'agent',
+        sessionKey: callControlId_Bridge,
+        legType: 'agent'
       };
       
       console.log('Broadcasting CALL_HANGUP for agent-initiated hangup:', agentHangupData);
@@ -1091,8 +1153,29 @@ router.post('/outbound-webrtc-bridge', express.json(), async (req, res) => {
     
     broadcast('CALL_BRIDGED', {
       callControlId: callControl,
-      bridgeId: callControlId_Bridge
+      bridgeId: callControlId_Bridge,
+      sessionKey: callControlId_Bridge,
+      legType: 'agent'
     });
+
+    // DB: ensure agent leg exists and set active; link to sessionKey
+    try {
+      const voiceRow = await Voice.findOne({ where: { queue_uuid: callControlId_Bridge } });
+      const acceptedBy = voiceRow?.accept_agent || null;
+      await CallLeg.findOrCreate({
+        where: { call_control_id: callControl },
+        defaults: {
+          sessionKey: callControlId_Bridge,
+          leg_type: 'agent',
+          direction: 'outgoing',
+          status: 'active',
+          start_time: new Date(),
+          accepted_by: acceptedBy,
+        },
+      });
+      await CallLeg.update({ status: 'active' }, { where: { call_control_id: callControl } });
+      await CallSession.update({ status: 'active' }, { where: { sessionKey: callControlId_Bridge } });
+    } catch (e) { console.error('DB error creating/updating agent leg on bridge:', e); }
   }
   
   // Handle failed PSTN calls
@@ -1128,6 +1211,29 @@ router.post('/outbound-webrtc-bridge', express.json(), async (req, res) => {
       console.error('Error handling PSTN call failure:', error);
     }
   }
+
+  // Outbound webhook: generic agent leg hangup persistence
+  if (event_type === 'call.hangup') {
+    try {
+      // Update the agent leg to ended
+      await CallLeg.update({
+        status: 'ended',
+        end_time: new Date(),
+        hangup_cause: req.body.data.payload.hangup_cause,
+        hangup_source: req.body.data.payload.hangup_source,
+      }, { where: { call_control_id: callControl } });
+
+      // If customer leg is already ended, end the session too
+      if (callControlId_Bridge) {
+        const customerLeg = await CallLeg.findOne({ where: { sessionKey: callControlId_Bridge, leg_type: 'customer' } });
+        if (customerLeg && customerLeg.status === 'ended') {
+          await CallSession.update({ status: 'ended', ended_at: new Date() }, { where: { sessionKey: callControlId_Bridge } });
+        }
+      }
+    } catch (e) {
+      console.error('DB error persisting agent leg hangup:', e);
+    }
+  }
   console.log("CALL CONTROL CLIENT STATE", clientState);
   if (event_type === 'call.hangup' && hangup_source === "callee" && clientState !== Buffer.from("Transfer").toString('base64')) {
     console.log("WEBRTC HANGUP")
@@ -1146,6 +1252,44 @@ router.post('/outbound-webrtc-bridge', express.json(), async (req, res) => {
   
   // Always respond with 200 OK
   res.status(200).send('OK');
+});
+
+// Lightweight auth (duplicated from telnyxRoutes)
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+const authenticateUser = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) return res.sendStatus(401);
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret-for-dev');
+    const user = await User.findOne({ where: { username: decoded.username } });
+    if (!user) return res.status(401).json({ message: 'Please authenticate.' });
+    req.user = user;
+    next();
+  } catch (err) {
+    res.status(401).json({ message: 'Please authenticate.' });
+  }
+};
+
+// Returns current active session for the authenticated agent (if any)
+router.get('/my-active-session', authenticateUser, async (req, res) => {
+  try {
+    const sipUsername = req.user.sipUsername;
+    // Find the most recent leg for this agent that's not ended
+    const agentLeg = await CallLeg.findOne({
+      where: { accepted_by: sipUsername, status: { [Op.in]: ['active', 'ringing'] } },
+      order: [['createdAt', 'DESC']],
+    });
+    if (!agentLeg) return res.json({ session: null });
+
+    const session = await CallSession.findOne({ where: { sessionKey: agentLeg.sessionKey } });
+    const legs = await CallLeg.findAll({ where: { sessionKey: agentLeg.sessionKey } });
+    return res.json({ session, legs });
+  } catch (e) {
+    console.error('Error fetching my-active-session:', e);
+    res.status(500).json({ error: 'Failed to fetch active session' });
+  }
 });
 
 // API endpoint to check call status (for frontend polling)

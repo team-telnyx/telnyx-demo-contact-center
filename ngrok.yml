@@ -1,0 +1,17 @@
+version: "2"
+authtoken: your_ngrok_auth_token_here
+
+tunnels:
+  backend:
+    proto: http
+    addr: localhost:3000
+    bind_tls: true
+    host_header: localhost:3000
+    hostname: telnyx.solutions
+    
+  frontend:
+    proto: http
+    addr: localhost:3001
+    bind_tls: true
+    host_header: localhost:3001
+    hostname: frontend.telnyx.solutions

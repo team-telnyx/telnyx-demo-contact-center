@@ -58,21 +58,27 @@ export const EnhancedModalProvider = ({ children }) => {
         
         // Listen for hangup/ended events directly on the call object
         newCall.on('destroy', () => {
-          console.log('WebRTC Call destroy event fired - remote hangup detected');
+          console.log('🔴 WebRTC Call destroy event fired - remote hangup detected');
+          console.log('🔴 Call ID:', newCall.id, 'Call State:', newCall.state, 'Call Active:', newCall.active);
+          console.log('🔴 Calling handleWebRTCCall with HANGUP');
           if (handleWebRTCCall) {
             handleWebRTCCall(newCall, 'HANGUP');
           }
         });
-        
+
         newCall.on('hangup', () => {
-          console.log('WebRTC Call hangup event fired - remote hangup detected');
+          console.log('🔴 WebRTC Call hangup event fired - remote hangup detected');
+          console.log('🔴 Call ID:', newCall.id, 'Call State:', newCall.state, 'Call Active:', newCall.active);
+          console.log('🔴 Calling handleWebRTCCall with HANGUP');
           if (handleWebRTCCall) {
             handleWebRTCCall(newCall, 'HANGUP');
           }
         });
-        
+
         newCall.on('ended', () => {
-          console.log('WebRTC Call ended event fired - remote hangup detected');
+          console.log('🔴 WebRTC Call ended event fired - remote hangup detected');
+          console.log('🔴 Call ID:', newCall.id, 'Call State:', newCall.state, 'Call Active:', newCall.active);
+          console.log('🔴 Calling handleWebRTCCall with ENDED');
           if (handleWebRTCCall) {
             handleWebRTCCall(newCall, 'ENDED');
           }
@@ -80,14 +86,18 @@ export const EnhancedModalProvider = ({ children }) => {
 
         // Additional event listeners for comprehensive hangup detection
         newCall.on('failed', () => {
-          console.log('WebRTC Call failed event fired');
+          console.log('🔴 WebRTC Call failed event fired');
+          console.log('🔴 Call ID:', newCall.id, 'Call State:', newCall.state, 'Call Active:', newCall.active);
+          console.log('🔴 Calling handleWebRTCCall with FAILED');
           if (handleWebRTCCall) {
             handleWebRTCCall(newCall, 'FAILED');
           }
         });
 
         newCall.on('terminated', () => {
-          console.log('WebRTC Call terminated event fired');
+          console.log('🔴 WebRTC Call terminated event fired');
+          console.log('🔴 Call ID:', newCall.id, 'Call State:', newCall.state, 'Call Active:', newCall.active);
+          console.log('🔴 Calling handleWebRTCCall with TERMINATED');
           if (handleWebRTCCall) {
             handleWebRTCCall(newCall, 'TERMINATED');
           }
@@ -95,8 +105,10 @@ export const EnhancedModalProvider = ({ children }) => {
 
         // Listen for state changes on the call object
         newCall.on('stateChanged', (newState) => {
-          console.log('WebRTC Call state changed to:', newState);
+          console.log('🟡 WebRTC Call state changed to:', newState);
+          console.log('🟡 Call ID:', newCall.id, 'Call Active:', newCall.active);
           if (newState === 'ended' || newState === 'hangup' || newState === 'terminated') {
+            console.log('🔴 State change detected call end - calling handleWebRTCCall');
             if (handleWebRTCCall) {
               handleWebRTCCall(newCall, newState.toUpperCase());
             }
@@ -108,15 +120,15 @@ export const EnhancedModalProvider = ({ children }) => {
         
         // Enhanced periodic checking for call state and remote hangup detection
         const stateCheckInterval = setInterval(() => {
-          console.log('Call state check:', newCall.state, 'Active:', newCall.active);
-          
+          console.log('⏰ Call state check:', newCall.state, 'Active:', newCall.active, 'ID:', newCall.id);
+
           // Check for ended states - including more comprehensive state checking
-          if (newCall.state === 'ended' || 
-              newCall.state === 'hangup' || 
+          if (newCall.state === 'ended' ||
+              newCall.state === 'hangup' ||
               newCall.state === 'terminated' ||
               newCall.state === 'destroyed' ||
               !newCall.active) {
-            console.log('Call ended - notifying CallManager', 'State:', newCall.state, 'Active:', newCall.active);
+            console.log('🔴 Periodic check detected call end - notifying CallManager', 'State:', newCall.state, 'Active:', newCall.active);
             clearInterval(stateCheckInterval);
             if (handleWebRTCCall) {
               handleWebRTCCall(newCall, 'HANGUP');
@@ -195,23 +207,98 @@ export const EnhancedModalProvider = ({ children }) => {
     onNotification: (message) => {
       console.log('Enhanced Modal - Notification message type:', message.type);
       console.log('Enhanced Modal - Full message:', message);
-      
+
       if (message.type === "callUpdate") {
         const call = message.call;
         console.log('Enhanced Modal - Call state:', call.state.toUpperCase());
         console.log('Enhanced Modal - Call object:', call);
         console.log('Enhanced Modal - Call options:', call.options);
-        
+
+        // For RINGING incoming calls, attach the same event listeners as outgoing calls
+        if (call.state.toUpperCase() === 'RINGING' && call.direction === 'inbound') {
+          console.log('Enhanced Modal - Adding event listeners to incoming WebRTC call');
+
+          // Listen for hangup/ended events directly on the incoming call object
+          call.on('destroy', () => {
+            console.log('WebRTC Incoming Call destroy event fired - remote hangup detected');
+            if (handleWebRTCCall) {
+              handleWebRTCCall(call, 'HANGUP');
+            }
+          });
+
+          call.on('hangup', () => {
+            console.log('WebRTC Incoming Call hangup event fired - remote hangup detected');
+            if (handleWebRTCCall) {
+              handleWebRTCCall(call, 'HANGUP');
+            }
+          });
+
+          call.on('ended', () => {
+            console.log('WebRTC Incoming Call ended event fired - remote hangup detected');
+            if (handleWebRTCCall) {
+              handleWebRTCCall(call, 'ENDED');
+            }
+          });
+
+          // Additional event listeners for comprehensive hangup detection
+          call.on('failed', () => {
+            console.log('WebRTC Incoming Call failed event fired');
+            if (handleWebRTCCall) {
+              handleWebRTCCall(call, 'FAILED');
+            }
+          });
+
+          call.on('terminated', () => {
+            console.log('WebRTC Incoming Call terminated event fired');
+            if (handleWebRTCCall) {
+              handleWebRTCCall(call, 'TERMINATED');
+            }
+          });
+
+          // Listen for state changes on the incoming call object
+          call.on('stateChanged', (newState) => {
+            console.log('WebRTC Incoming Call state changed to:', newState);
+            if (newState === 'ended' || newState === 'hangup' || newState === 'terminated') {
+              if (handleWebRTCCall) {
+                handleWebRTCCall(call, newState.toUpperCase());
+              }
+            }
+          });
+
+          // Enhanced periodic checking for incoming call state and remote hangup detection
+          const stateCheckInterval = setInterval(() => {
+            console.log('Incoming Call state check:', call.state, 'Active:', call.active);
+
+            // Check for ended states - including more comprehensive state checking
+            if (call.state === 'ended' ||
+                call.state === 'hangup' ||
+                call.state === 'terminated' ||
+                call.state === 'destroyed' ||
+                !call.active) {
+              console.log('Incoming Call ended - notifying CallManager', 'State:', call.state, 'Active:', call.active);
+              clearInterval(stateCheckInterval);
+              if (handleWebRTCCall) {
+                handleWebRTCCall(call, 'HANGUP');
+              }
+            }
+          }, 1000); // Check every 1 second for faster detection
+
+          // Clear interval after 5 minutes to prevent memory leaks
+          setTimeout(() => {
+            clearInterval(stateCheckInterval);
+          }, 300000);
+        }
+
         // Check for hangup/ended states specifically - enhanced detection
-        if (call.state.toUpperCase() === 'ENDED' || 
-            call.state.toUpperCase() === 'HANGUP' || 
+        if (call.state.toUpperCase() === 'ENDED' ||
+            call.state.toUpperCase() === 'HANGUP' ||
             call.state.toUpperCase() === 'TERMINATED' ||
             call.state.toUpperCase() === 'DESTROYED' ||
             call.state.toUpperCase() === 'FAILED' ||
             !call.active) {
           console.log('Enhanced Modal - Detected call end state:', call.state, 'Active:', call.active);
         }
-        
+
         // Route all WebRTC call notifications through CallManager
         if (handleWebRTCCall) {
           handleWebRTCCall(call, call.state.toUpperCase());
