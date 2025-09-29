@@ -31,7 +31,6 @@ const UniversalCallModal = () => {
   // Destructure with fallbacks for safety
   const {
     activeCall = null,
-    incomingCalls = [],
     callState = 'IDLE',
     isCallModalOpen = false,
     acceptQueueCall = () => Promise.resolve({ success: false }),
@@ -41,108 +40,50 @@ const UniversalCallModal = () => {
     closeModal = () => {}
   } = callManager || {};
 
-  // Debug logging for all state changes
-  console.log('🎭 UniversalCallModal: RENDER STATE:', {
-    activeCall: activeCall?.id,
-    callState,
-    isCallModalOpen,
-    hasCallObject: !!activeCall?.callObject,
-    callObjectActive: activeCall?.callObject?.active,
-    callObjectState: activeCall?.callObject?.state
-  });
 
   const [callDuration, setCallDuration] = useState(0);
   const [isMinimized, setIsMinimized] = useState(false);
+  const [isAnswering, setIsAnswering] = useState(false);
 
-  // Monitor for call end events and auto-close modal - but only after a delay to prevent race conditions
+  // Monitor for call end events and auto-close modal
   useEffect(() => {
-    console.log('💫 UniversalCallModal: useEffect triggered - activeCall:', activeCall?.id, 'callState:', callState, 'isCallModalOpen:', isCallModalOpen);
-
     if (!activeCall && callState === 'IDLE' && isCallModalOpen) {
-      console.log('💫 UniversalCallModal: Setting timeout to close modal in 500ms (reduced delay)');
-      // Reduced delay for faster modal close on remote hangup
       const timeoutId = setTimeout(() => {
-        console.log('💫 UniversalCallModal: ✅ Timeout fired - No active call after delay, closing modal');
+        console.log('UniversalCallModal: No active call after delay, closing modal');
         closeModal();
-        setIsMinimized(false); // Reset minimized state
-      }, 500);
+        setIsMinimized(false);
+        setIsAnswering(false); // Reset answering state when modal closes
+      }, 1000);
 
       return () => {
-        console.log('💫 UniversalCallModal: Cleanup - clearing timeout');
         clearTimeout(timeoutId);
       };
-    } else {
-      console.log('💫 UniversalCallModal: Not closing modal - activeCall exists or callState not IDLE or modal not open');
     }
   }, [activeCall, callState, isCallModalOpen, closeModal]);
 
-  // Additional effect to force close modal when call becomes inactive
+  // Auto-close modal when WebRTC call becomes inactive (only for WebRTC calls)
   useEffect(() => {
-    if (activeCall && activeCall.callObject) {
-      // Check if WebRTC call object indicates call is no longer active
+    if (activeCall && activeCall.type === 'webrtc' && activeCall.callObject) {
+      console.log('UniversalCallModal: Checking WebRTC call object state:', {
+        active: activeCall.callObject.active,
+        state: activeCall.callObject.state,
+        callType: activeCall.type,
+        callState,
+        isCallModalOpen
+      });
+
       if (!activeCall.callObject.active ||
           activeCall.callObject.state === 'ended' ||
           activeCall.callObject.state === 'hangup' ||
           activeCall.callObject.state === 'terminated') {
-        console.log('💫 UniversalCallModal: WebRTC call object indicates call ended, forcing close');
+        console.log('UniversalCallModal: WebRTC call inactive, closing modal');
         closeModal();
         setIsMinimized(false);
+        setIsAnswering(false); // Reset answering state when modal closes
       }
     }
-  }, [activeCall, closeModal]);
+  }, [activeCall, closeModal, callState, isCallModalOpen]);
 
-  // Emergency force close mechanism
-  const forceCloseModal = () => {
-    console.log('🚨 UniversalCallModal: EMERGENCY FORCE CLOSE TRIGGERED');
-    closeModal();
-    setIsMinimized(false);
-  };
-
-  // Periodic check to ensure modal closes on remote hangup (fallback mechanism)
-  useEffect(() => {
-    if (activeCall && isCallModalOpen) {
-      const checkInterval = setInterval(() => {
-        // Check both WebRTC leg and queue call status
-        const webRTCActive = activeCall.callObject ? activeCall.callObject.active : true;
-        const webRTCState = activeCall.callObject ? activeCall.callObject.state : 'unknown';
-
-        console.log('🕐 UniversalCallModal: Periodic check - type:', activeCall.type, 'WebRTC active:', webRTCActive, 'WebRTC state:', webRTCState, 'callState:', callState);
-
-        // For bridged calls (queue + webrtc), if either leg ends, close modal
-        const webRTCEnded = activeCall.callObject && (
-          !activeCall.callObject.active ||
-          activeCall.callObject.state === 'ended' ||
-          activeCall.callObject.state === 'hangup' ||
-          activeCall.callObject.state === 'terminated' ||
-          activeCall.callObject.state === 'destroyed'
-        );
-
-        const queueCallEnded = callState === 'IDLE' || !activeCall;
-
-        if (webRTCEnded || queueCallEnded) {
-          console.log('🕐 UniversalCallModal: ⚡ PERIODIC CHECK DETECTED CALL END');
-          console.log('🕐   - WebRTC ended:', webRTCEnded);
-          console.log('🕐   - Queue ended:', queueCallEnded);
-          forceCloseModal();
-          clearInterval(checkInterval);
-        }
-      }, 500); // Check every 500ms for faster response
-
-      // Cleanup interval after 5 minutes
-      const cleanup = setTimeout(() => {
-        clearInterval(checkInterval);
-      }, 300000);
-
-      return () => {
-        clearInterval(checkInterval);
-        clearTimeout(cleanup);
-      };
-    }
-  }, [activeCall, isCallModalOpen, callState, closeModal]);
-
-  // Removed aggressive server polling that was causing modal to close prematurely on call answer
-
-  // Remove the polling mechanism - WebRTC hangup detection is now handled by event listeners in CallManagerContext
 
   // Call duration timer
   useEffect(() => {
@@ -155,7 +96,7 @@ const UniversalCallModal = () => {
           const duration = Math.floor((now - start) / 1000);
           setCallDuration(duration);
         } catch (error) {
-          console.error('UniversalCallModal: Error calculating call duration:', error);
+          console.error('Error calculating call duration:', error);
           clearInterval(interval);
         }
       }, 1000);
@@ -180,6 +121,15 @@ const UniversalCallModal = () => {
     if (!activeCall) return;
 
     try {
+      setIsAnswering(true);
+      console.log('UniversalCallModal: Answering call:', {
+        type: activeCall.type,
+        callState,
+        hasCallObject: !!activeCall.callObject,
+        callObjectState: activeCall.callObject?.state,
+        callObjectActive: activeCall.callObject?.active
+      });
+
       let result;
       if (activeCall.type === 'queue') {
         result = await acceptQueueCall(activeCall);
@@ -187,12 +137,19 @@ const UniversalCallModal = () => {
         result = answerWebRTCCall(activeCall);
       }
 
+      console.log('UniversalCallModal: Answer result:', result);
+
       if (!result?.success) {
         console.error('Failed to answer call:', result?.error);
-        // Could show error toast here
       }
+
+      // Wait a bit before clearing the answering state to prevent race conditions
+      setTimeout(() => {
+        setIsAnswering(false);
+      }, 1000);
     } catch (error) {
       console.error('Error answering call:', error);
+      setIsAnswering(false);
     }
   };
 
@@ -203,24 +160,42 @@ const UniversalCallModal = () => {
         declineCall(activeCall);
       }
     } catch (error) {
-      console.error('UniversalCallModal: Error declining call:', error);
+      console.error('Error declining call:', error);
     }
   };
 
-  // Handle hang up button click  
+  // Handle hang up button click
   const handleHangUp = () => {
     try {
-      console.log('UniversalCallModal: handleHangUp clicked');
-      console.log('UniversalCallModal: activeCall:', activeCall);
       if (activeCall) {
-        console.log('UniversalCallModal: Calling hangUpCall');
-        const result = hangUpCall(activeCall);
-        console.log('UniversalCallModal: hangUpCall result:', result);
-      } else {
-        console.log('UniversalCallModal: No active call to hang up');
+        hangUpCall(activeCall);
       }
     } catch (error) {
-      console.error('UniversalCallModal: Error hanging up call:', error);
+      console.error('Error hanging up call:', error);
+    }
+  };
+
+  // Handle hold button click
+  const handleHold = () => {
+    try {
+      if (activeCall && activeCall.type === 'webrtc' && activeCall.callObject) {
+        console.log('Putting WebRTC call on hold');
+        activeCall.callObject.hold();
+      }
+    } catch (error) {
+      console.error('Error putting call on hold:', error);
+    }
+  };
+
+  // Handle unhold button click
+  const handleUnhold = () => {
+    try {
+      if (activeCall && activeCall.type === 'webrtc' && activeCall.callObject) {
+        console.log('Taking WebRTC call off hold');
+        activeCall.callObject.unhold();
+      }
+    } catch (error) {
+      console.error('Error taking call off hold:', error);
     }
   };
 
@@ -256,12 +231,6 @@ const UniversalCallModal = () => {
     }
   };
 
-  // Render incoming calls queue - DISABLED until connected to live queue API
-  const renderIncomingCallsQueue = () => {
-    // Disabled waiting calls display - showing stale data
-    // TODO: Connect to live queue API from PhonePage or remove entirely
-    return null;
-  };
 
   // Render minimized view
   const renderMinimizedView = () => {
@@ -300,7 +269,6 @@ const UniversalCallModal = () => {
   // Render full modal view
   const renderFullView = () => {
     if (!activeCall) {
-      console.warn('UniversalCallModal: No active call for full view');
       return null;
     }
 
@@ -401,15 +369,15 @@ const UniversalCallModal = () => {
           <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
             {callState === 'INCOMING' && (
               <>
-                <Button 
+                <Button
                   variant="contained"
                   color="success"
                   fullWidth
                   startIcon={<PhoneIcon />}
                   onClick={handleAnswer}
-                  disabled={callState === 'CONNECTING'}
+                  disabled={callState === 'CONNECTING' || isAnswering}
                 >
-                  Answer
+                  {isAnswering ? 'Answering...' : 'Answer'}
                 </Button>
                 <Button 
                   variant="contained"
@@ -444,53 +412,47 @@ const UniversalCallModal = () => {
                 </Button>
               </>
             )}
-
-            {/* Emergency Force Close Button */}
-            <Button
-              variant="contained"
-              color="warning"
-              size="small"
-              onClick={forceCloseModal}
-              sx={{ mt: 1 }}
-            >
-              🚨 FORCE CLOSE (DEBUG)
-            </Button>
           </Box>
 
           {/* Additional call controls for active calls */}
-          {callState === 'ACTIVE' && (
+          {(callState === 'ACTIVE' || callState === 'HOLDING') && (
             <>
               <Divider sx={{ my: 2, borderColor: 'rgba(255,255,255,0.2)' }} />
               <Box sx={{ display: 'flex', gap: 1 }}>
                 <Button variant="outlined" size="small" sx={{ color: 'white', borderColor: 'white', flex: 1 }}>
                   Mute
                 </Button>
-                <Button variant="outlined" size="small" sx={{ color: 'white', borderColor: 'white', flex: 1 }}>
-                  Hold
-                </Button>
-                <Button variant="outlined" size="small" sx={{ color: 'white', borderColor: 'white', flex: 1 }}>
-                  Transfer
-                </Button>
+                {callState === 'HOLDING' ? (
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    sx={{ color: 'white', borderColor: 'white', flex: 1 }}
+                    onClick={handleUnhold}
+                  >
+                    Unhold
+                  </Button>
+                ) : (
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    sx={{ color: 'white', borderColor: 'white', flex: 1 }}
+                    onClick={handleHold}
+                  >
+                    Hold
+                  </Button>
+                )}
               </Box>
             </>
           )}
-
-          {/* Waiting calls */}
-          {renderIncomingCallsQueue()}
         </CardContent>
       </Card>
     );
   };
 
   // Don't render if modal is closed and there is no active call
-  // Note: We intentionally ignore incomingCalls here to prevent the modal container
-  // from lingering due to queued items; queue list UI is disabled in this modal.
   if (!isCallModalOpen && !activeCall) {
-    console.log('💫 UniversalCallModal: Not rendering - modal closed and no calls');
     return null;
   }
-
-  console.log('💫 UniversalCallModal: Rendering modal - activeCall:', activeCall?.id, 'isCallModalOpen:', isCallModalOpen);
 
   // Ensure we have a valid portal target
   const portalTarget = document.getElementById('modal-root') || document.body;
@@ -522,7 +484,7 @@ const UniversalCallModal = () => {
   try {
     return ReactDOM.createPortal(modalContent, portalTarget);
   } catch (error) {
-    console.error('UniversalCallModal: Portal creation failed:', error);
+    console.error('Portal creation failed:', error);
     return null;
   }
 };

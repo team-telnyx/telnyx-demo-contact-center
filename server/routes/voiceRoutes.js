@@ -7,7 +7,7 @@ const router = express.Router();
 const CallSession = require('../models/CallSession');
 const CallLeg = require('../models/CallLeg');
 const axios = require('axios');
-const { broadcast, broadcastToAgent, broadcastToAcceptingSocket } = require('./websocket'); 
+const { broadcast, broadcastToAgent, broadcastToAgentPrimary, broadcastToAcceptingSocket } = require('./websocket'); 
 
 // Track active calls in memory
 const activeCalls = new Map();
@@ -111,59 +111,214 @@ router.post('/webhook', express.json(), async (req, res) => {
       
       // Always answer the call first to ensure proper call flow
       if (telnyxClient) {
-        console.log('Attempting to answer call...');
-        telnyxClient.calls.answer(data.payload.call_control_id)
+        console.log('🔄 Attempting to answer incoming call...');
+        console.log('🔄 Call details:', {
+          callId: data.payload.call_control_id,
+          from: data.payload.from,
+          to: data.payload.to,
+          timestamp: new Date().toISOString()
+        });
+
+        axios.post(
+          `https://api.telnyx.com/v2/calls/${data.payload.call_control_id}/actions/answer`,
+          {},
+          {
+            headers: {
+              'Authorization': `Bearer ${process.env.TELNYX_API}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        )
           .then(() => {
-            console.log('Call answered successfully');
+            console.log('✅ Call answered successfully');
           })
           .catch(error => {
-            console.error('Error answering call:', error);
+            console.error('❌ Error answering call:', error.message);
+            console.error('❌ Answer error type:', error.response?.status);
+            console.error('❌ Answer error code:', error.response?.data?.errors?.[0]?.code);
           });
       } else {
-        console.error('No Telnyx client available - check initialization');
+        console.error('❌ No Telnyx client available - check initialization');
       }
     }).catch(error => {
       console.error('Error finding available agent:', error);
       // Always answer regardless of agent availability
       if (telnyxClient) {
-        console.log('Fallback: Attempting to answer call...');
-        telnyxClient.calls.answer(data.payload.call_control_id)
+        console.log('🔄 Fallback: Attempting to answer call (no available agent query result)...');
+        console.log('🔄 Fallback call details:', {
+          callId: data.payload.call_control_id,
+          from: data.payload.from,
+          to: data.payload.to,
+          timestamp: new Date().toISOString()
+        });
+
+        axios.post(
+          `https://api.telnyx.com/v2/calls/${data.payload.call_control_id}/actions/answer`,
+          {},
+          {
+            headers: {
+              'Authorization': `Bearer ${process.env.TELNYX_API}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        )
           .then(() => {
-            console.log('Fallback: Call answered successfully');
+            console.log('✅ Fallback: Call answered successfully');
           })
           .catch(error => {
-            console.error('Fallback: Error answering call:', error);
+            console.error('❌ Fallback: Error answering call:', error.message);
+            console.error('❌ Fallback answer error type:', error.response?.status);
+            console.error('❌ Fallback answer error code:', error.response?.data?.errors?.[0]?.code);
           });
       } else {
-        console.error('Fallback: No Telnyx client available');
+        console.error('❌ Fallback: No Telnyx client available');
       }
     });
   }
   // broadcast the call status to the client
   
   if (data.event_type === 'call.answered') {
-    console.log('Call answered event received, attempting to enqueue...');
+    console.log('📞 Call answered event received, attempting to enqueue...');
+    console.log('📞 Call details:', {
+      callId: data.payload.call_control_id,
+      from: data.payload.from,
+      to: data.payload.to,
+      direction: data.payload.direction,
+      timestamp: new Date().toISOString()
+    });
+
+    // First, verify the call is still alive before enqueuing
     if (telnyxClient) {
-      telnyxClient.calls.enqueue(data.payload.call_control_id, {queue_name: 'General_Queue'})
-        .then(response => {
-          console.log('Call successfully enqueued:', response);
-        })
-        .catch(error => {
-          console.error('Error enqueuing call:', error);
+      try {
+        // Check call status first
+        console.log('📞 Verifying call status before enqueue...');
+        const callStatus = await telnyxClient.calls.retrieve(data.payload.call_control_id);
+        console.log('📞 Call status raw response:', callStatus);
+        console.log('📞 Call status parsed:', {
+          is_alive: callStatus.data?.is_alive || callStatus.is_alive,
+          state: callStatus.data?.state || callStatus.state,
+          call_duration: callStatus.data?.call_duration || callStatus.call_duration || '0'
         });
+
+        const isAlive = callStatus.data?.is_alive || callStatus.is_alive;
+        if (!isAlive) {
+          console.error('❌ Call is no longer alive, cannot enqueue');
+          return;
+        }
+
+        // Add a small delay to ensure call is fully established
+        console.log('📞 Adding 500ms delay before enqueue to ensure call stability...');
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Now attempt to enqueue
+        console.log('📞 Attempting to enqueue call...');
+        const enqueueResponse = await axios.post(
+          `https://api.telnyx.com/v2/calls/${data.payload.call_control_id}/actions/enqueue`,
+          {
+            queue_name: 'General_Queue'
+          },
+          {
+            headers: {
+              'Authorization': `Bearer ${process.env.TELNYX_API}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+        console.log('✅ Call successfully enqueued:', enqueueResponse);
+
+      } catch (error) {
+        console.error('❌ Error during call enqueue process:', error.message);
+        console.error('❌ Error type:', error.type);
+        console.error('❌ Error code:', error.raw?.errors?.[0]?.code);
+        console.error('❌ Error detail:', error.raw?.errors?.[0]?.detail);
+
+        if (error.type === 'TelnyxInvalidParametersError' && error.raw?.errors?.[0]?.code === '90018') {
+          console.log('⚠️ Call already ended before enqueuing - customer may have hung up quickly');
+        } else {
+          console.error('❌ Unexpected enqueue error, call may have failed');
+        }
+      }
     } else {
-      console.error('No Telnyx client available for enqueuing');
+      console.error('❌ No Telnyx client available for enqueuing');
     }
   }
   if (data.event_type === 'call.enqueued') {
+    console.log('🎵 Call enqueued event received, starting hold music...');
+    console.log('🎵 Enqueued call details:', {
+      callId: data.payload.call_control_id,
+      queue: data.payload.queue,
+      timestamp: new Date().toISOString()
+    });
+
     broadcast('NEW_CALL', data);
-    console.log('Call Enqueued:', data.payload.call_control_id);
+    console.log('🎵 Broadcasted NEW_CALL event to frontend');
+
+    // Update database status
     try {
       await CallSession.update({ status: 'queued' }, { where: { sessionKey: data.payload.call_control_id } });
       await CallLeg.update({ status: 'ringing' }, { where: { call_control_id: data.payload.call_control_id } });
-    } catch (e) { console.error('DB error updating status to queued:', e); }
+      console.log('🎵 Database updated: call status set to queued');
+    } catch (e) {
+      console.error('❌ DB error updating status to queued:', e);
+    }
+
+    // Start hold music
     if (telnyxClient) {
-      telnyxClient.calls.playback_start(data.payload.call_control_id, {audio_url: 'http://com.twilio.music.classical.s3.amazonaws.com/MARKOVICHAMP-Borghestral.mp3'});
+      try {
+        // Verify call is still active before starting hold music
+        console.log('🎵 Verifying call is still active before starting hold music...');
+        const callStatus = await telnyxClient.calls.retrieve(data.payload.call_control_id);
+        console.log('🎵 Call status raw for hold music:', callStatus);
+        console.log('🎵 Call status parsed for hold music:', {
+          is_alive: callStatus.data?.is_alive || callStatus.is_alive,
+          state: callStatus.data?.state || callStatus.state,
+          call_duration: callStatus.data?.call_duration || callStatus.call_duration || '0'
+        });
+
+        const isAliveForMusic = callStatus.data?.is_alive || callStatus.is_alive;
+        if (!isAliveForMusic) {
+          console.error('❌ Call ended before hold music could start');
+          return;
+        }
+
+        // Add a small delay to ensure call is stable
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        // Start hold music directly with Twilio audio URL
+        console.log('🎵 Starting hold music...');
+        try {
+          const playbackResponse = await axios.post(
+            `https://api.telnyx.com/v2/calls/${data.payload.call_control_id}/actions/playback_start`,
+            {
+              audio_url: 'http://com.twilio.music.classical.s3.amazonaws.com/MARKOVICHAMP-Borghestral.mp3'
+            },
+            {
+              headers: {
+                'Authorization': `Bearer ${process.env.TELNYX_API}`,
+                'Content-Type': 'application/json'
+              }
+            }
+          );
+          console.log('✅ Queue hold music started successfully:', playbackResponse.data);
+        } catch (audioError) {
+          console.error('❌ Hold music failed:', audioError.response?.data || audioError.message);
+        }
+
+      } catch (playbackError) {
+        console.error('❌ Error starting queue hold music:', playbackError.message);
+        console.error('❌ Hold music error status:', playbackError.response?.status);
+        console.error('❌ Hold music error data:', JSON.stringify(playbackError.response?.data, null, 2));
+
+        if (playbackError.response?.status === 422) {
+          console.log('⚠️ 422 Error - Invalid request parameters for playback_start');
+        } else if (playbackError.response?.data?.errors?.[0]?.code === '90018') {
+          console.log('⚠️ Call already ended before hold music could start - customer hung up');
+        } else {
+          console.error('❌ Unexpected hold music error - this may indicate a configuration issue');
+        }
+      }
+    } else {
+      console.error('❌ No Telnyx client available for hold music');
     }
     Voice.update({
       queue_name: data.payload.queue // queue name
@@ -677,13 +832,27 @@ router.post('/transfer', express.json(), async (req, res) => {
       where: { queue_uuid: customerCallId }
     });
     
-    // Broadcast transfer initiated event
+    // Broadcast transfer initiated event to all agents (for general awareness)
     broadcast('TRANSFER_INITIATED', {
       customerCallId: customerCallId,
       currentAgentCallId: currentAgentCallId,
       newAgentCallId: newAgentCallId,
       transferToAgent: sipUsername
     });
+
+    // Send targeted notification to the MAIN/PRIMARY device of the receiving agent
+    console.log(`Sending targeted transfer notification to PRIMARY device of agent: ${sipUsername}`);
+    const targetedSuccess = broadcastToAgentPrimary(sipUsername, 'INCOMING_TRANSFER', {
+      customerCallId: customerCallId,
+      currentAgentCallId: currentAgentCallId,
+      newAgentCallId: newAgentCallId,
+      fromAgent: 'current_agent', // Could be enhanced to include actual transferring agent
+      callerId: callerId
+    });
+
+    if (!targetedSuccess) {
+      console.warn(`Warning: Could not send targeted transfer notification to ${sipUsername} - agent may not be connected or no primary device found`);
+    }
     
     res.json({ 
       success: true, 
@@ -752,12 +921,20 @@ router.post('/transfer-dial-webhook', express.json(), async (req, res) => {
         where: { queue_uuid: customerCallId }
       });
       
-      // Broadcast successful transfer
+      // Broadcast successful transfer to all agents
       broadcast('TRANSFER_COMPLETED', {
         customerCallId: customerCallId,
         newAgentCallId: newAgentCallId,
         transferToAgent: transferToAgent,
         status: 'success'
+      });
+
+      // Send targeted completion notification to the receiving agent's primary device
+      broadcastToAgentPrimary(transferToAgent, 'TRANSFER_ACCEPTED', {
+        customerCallId: customerCallId,
+        newAgentCallId: newAgentCallId,
+        status: 'completed',
+        action: 'call_connected'
       });
       
     } else if (event_type === 'call.hangup') {
@@ -817,6 +994,9 @@ router.post('/transfer-webhook', express.json(), async (req, res) => {
         callControlId: callControlId,
         status: 'success'
       });
+
+      // Note: For legacy webhook, we don't have transfer agent info readily available
+      // This is handled by the main transfer-dial-webhook above
       
     } else if (event_type === 'call.hangup') {
       const hangupCause = payload.hangup_cause;
@@ -1022,29 +1202,8 @@ router.post('/outbound-webrtc', express.json(), async (req, res) => {
       console.log("WEBRTC ANSWER OUTBOUND CCID", transferId)
       console.log(`Dialing outbound call: ${fromNumber} -> ${toNumber}`);
       
-      // Put the WebRTC call in a waiting state with ring back tone
-      try {
-        await axios.post(`https://api.telnyx.com/v2/calls/${transferId}/actions/playback_start`, {
-          audio_url: 'https://audio.telnyx.com/ring_back_tone.wav',
-          loop: true,
-          client_state: Buffer.from(transferId).toString('base64'),
-        }, config);
-        console.log('Started ring back tone for WebRTC call');
-      } catch (holdError) {
-        console.error('Error starting ring back tone:', holdError);
-        // Try simpler approach - just speak to the user
-        try {
-          await axios.post(`https://api.telnyx.com/v2/calls/${transferId}/actions/speak`, {
-            payload: 'Please hold while we connect your call',
-            voice: 'female',
-            language: 'en-US',
-            client_state: Buffer.from(transferId).toString('base64'),
-          }, config);
-          console.log('Started hold message for WebRTC call');
-        } catch (speakError) {
-          console.error('Error starting hold message:', speakError);
-        }
-      }
+      // Removed ringing sound playback to avoid 422 errors
+      console.log('WebRTC call answered, proceeding without ring back tone');
       
       const telnyxRequestBody = {
         connection_id: process.env.TELNYX_CONNECTION_ID || '2397473570750989860',
@@ -1158,10 +1317,22 @@ router.post('/outbound-webrtc-bridge', express.json(), async (req, res) => {
       legType: 'agent'
     });
 
-    // DB: ensure agent leg exists and set active; link to sessionKey
+    // DB: ensure session and agent leg exist and set active
     try {
       const voiceRow = await Voice.findOne({ where: { queue_uuid: callControlId_Bridge } });
       const acceptedBy = voiceRow?.accept_agent || null;
+
+      // Ensure CallSession exists first (for outbound calls, it might not exist)
+      await CallSession.findOrCreate({
+        where: { sessionKey: callControlId_Bridge },
+        defaults: {
+          status: 'active',
+          direction: 'outbound',
+          started_at: new Date(),
+        },
+      });
+
+      // Now create the agent leg
       await CallLeg.findOrCreate({
         where: { call_control_id: callControl },
         defaults: {
@@ -1173,6 +1344,8 @@ router.post('/outbound-webrtc-bridge', express.json(), async (req, res) => {
           accepted_by: acceptedBy,
         },
       });
+
+      // Update statuses
       await CallLeg.update({ status: 'active' }, { where: { call_control_id: callControl } });
       await CallSession.update({ status: 'active' }, { where: { sessionKey: callControlId_Bridge } });
     } catch (e) { console.error('DB error creating/updating agent leg on bridge:', e); }
@@ -1180,14 +1353,27 @@ router.post('/outbound-webrtc-bridge', express.json(), async (req, res) => {
   
   // Handle failed PSTN calls
   if (event_type === 'call.hangup' && hangup_source === "caller" && callControlId_Bridge) {
-    console.log('PSTN call failed or was rejected, notifying WebRTC user');
+    console.log('PSTN call failed or was rejected, checking if WebRTC user needs notification');
     try {
+      // First check if the WebRTC call is still alive before trying to speak to it
+      const webrtcCallStatus = await axios.get(`https://api.telnyx.com/v2/calls/${callControlId_Bridge}`, {
+        headers: { 'Authorization': `Bearer ${process.env.TELNYX_API}` }
+      });
+
+      const isWebRTCCallActive = webrtcCallStatus.data.data.is_alive;
+      console.log(`WebRTC call ${callControlId_Bridge} is_alive:`, isWebRTCCallActive);
+
+      if (!isWebRTCCallActive) {
+        console.log('WebRTC call already ended, skipping notification');
+        return;
+      }
+
       // Stop any playback first
       await axios.post(`https://api.telnyx.com/v2/calls/${callControlId_Bridge}/actions/playback_stop`, {}, {
         headers: { 'Authorization': `Bearer ${process.env.TELNYX_API}` }
       }).catch(() => {}); // Ignore errors
-      
-      // Inform the user and hang up
+
+      // Inform the user about the failed connection
       await axios.post(`https://api.telnyx.com/v2/calls/${callControlId_Bridge}/actions/speak`, {
         payload: 'The call could not be connected. Please try again later.',
         voice: 'female',
@@ -1196,19 +1382,37 @@ router.post('/outbound-webrtc-bridge', express.json(), async (req, res) => {
         headers: { 'Authorization': `Bearer ${process.env.TELNYX_API}` }
       });
       
-      // Hang up after a short delay
+      // Hang up after a short delay to allow user to hear the message
       setTimeout(async () => {
         try {
-          await axios.post(`https://api.telnyx.com/v2/calls/${callControlId_Bridge}/actions/hangup`, {}, {
+          // Double-check call is still alive before hanging up
+          const finalCheckStatus = await axios.get(`https://api.telnyx.com/v2/calls/${callControlId_Bridge}`, {
             headers: { 'Authorization': `Bearer ${process.env.TELNYX_API}` }
           });
+
+          if (finalCheckStatus.data.data.is_alive) {
+            await axios.post(`https://api.telnyx.com/v2/calls/${callControlId_Bridge}/actions/hangup`, {}, {
+              headers: { 'Authorization': `Bearer ${process.env.TELNYX_API}` }
+            });
+            console.log('WebRTC call hung up after PSTN failure');
+          } else {
+            console.log('WebRTC call already ended, no need to hang up');
+          }
         } catch (hangupError) {
-          console.error('Error hanging up WebRTC call after PSTN failure:', hangupError);
+          if (hangupError.response?.status === 422) {
+            console.log('WebRTC call already ended before hangup attempt (expected)');
+          } else {
+            console.error('Error hanging up WebRTC call after PSTN failure:', hangupError.message);
+          }
         }
       }, 3000);
       
     } catch (error) {
-      console.error('Error handling PSTN call failure:', error);
+      if (error.response?.status === 422) {
+        console.error('WebRTC call no longer available for notification (422 error) - this is expected if call already ended');
+      } else {
+        console.error('Error handling PSTN call failure:', error.message);
+      }
     }
   }
 

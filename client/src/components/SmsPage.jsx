@@ -9,7 +9,7 @@ import { io } from "socket.io-client";
 const getAgentsWithTag = async (tag) => {
   try {
     const token = localStorage.getItem('token');
-    const response = await axios.get(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/telnyx/phone-numbers`, {
+    const response = await axios.get(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/telnyx/phone-numbers`, {
       params: {
         tag: tag,
         page: 1,
@@ -46,10 +46,11 @@ const SmsPage = ({ isOpen }) => {
   useEffect(() => {
     setUnreadCount(0);
     setQueueUnreadCount(0);
-    const socket = io(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}`);
+    const socket = io(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}`);
 
     socket.on("connect", () => {
-        console.log('Connected to the server');
+        console.log('SmsPage: Connected to websocket server');
+        console.log('SmsPage: Socket ID:', socket.id);
     });
 
     socket.on("NEW_MESSAGE", (msg) => {
@@ -59,21 +60,55 @@ const SmsPage = ({ isOpen }) => {
         setConversations(prevConversations => {
             return prevConversations.map(conv => {
                 if (conv.conversation_id === msg.conversation_id) {
-                  if (msg.isAssigned && msg.assignedAgent === username) {
                     return {
                         ...conv,
-                        last_message: msg.text_body 
+                        last_message: msg.text_body
                     };
-                }}
+                }
                 return conv;
             });
         });
-        console.log("New message received:", msg);
+
+        // If message is unassigned, add conversation to message queue if not already there
+        console.log('Message isAssigned:', msg.isAssigned, 'assignedAgent:', msg.assignedAgent);
+        if (!msg.isAssigned) {
+            console.log('Adding unassigned message to queue');
+            setMessageQueue(prevQueue => {
+                const existsInQueue = prevQueue.some(conv => conv.conversation_id === msg.conversation_id);
+                console.log('Exists in queue:', existsInQueue, 'Queue length:', prevQueue.length);
+                if (!existsInQueue) {
+                    // Fetch the conversation details and add to queue
+                    const newConversation = {
+                        conversation_id: msg.conversation_id,
+                        from_number: msg.destination_number,
+                        to_number: msg.telnyx_number,
+                        last_message: msg.text_body
+                    };
+                    console.log('Adding new conversation to queue:', newConversation);
+                    return [...prevQueue, newConversation];
+                } else {
+                    // Update existing conversation in queue
+                    console.log('Updating existing conversation in queue');
+                    return prevQueue.map(conv =>
+                        conv.conversation_id === msg.conversation_id
+                            ? { ...conv, last_message: msg.text_body }
+                            : conv
+                    );
+                }
+            });
+        } else {
+            console.log('Message is assigned, not adding to queue');
+        }
+
+        console.log("SmsPage: NEW_MESSAGE received:", msg);
     });
 
     socket.on("NEW_CONVERSATION", (newConversation) => {
-      console.log('New conversation received:', newConversation);
-      setMessageQueue((prev) => [...prev, newConversation]);
+      console.log('SmsPage: NEW_CONVERSATION received:', newConversation);
+      setMessageQueue((prev) => {
+        console.log('SmsPage: Adding to message queue, current queue size:', prev.length);
+        return [...prev, newConversation];
+      });
     });
 
     socket.on("CONVERSATION_ASSIGNED", (assignedConversation) => {
@@ -88,7 +123,7 @@ const SmsPage = ({ isOpen }) => {
     });
 
     return () => socket.disconnect();
-}, [selectedConversation, conversationMessages, setUnreadCount, setQueueUnreadCount, setConversations, setConversationMessages]);
+}, [selectedConversation, setUnreadCount, setQueueUnreadCount, username]);
 
 
   useEffect(() => {
@@ -103,7 +138,7 @@ const SmsPage = ({ isOpen }) => {
       // Fetch conversations directly without relying on globalConversations
       const fetchAssignedConversations = async () => {
         try {
-          const res = await axios.get(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/assignedTo/${username}`);
+          const res = await axios.get(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/assignedTo/${username}`);
           setConversations(res.data);
         } catch (err) {
           console.error('Error fetching conversations:', err);
@@ -113,10 +148,13 @@ const SmsPage = ({ isOpen }) => {
       // Fetch unassigned conversations for message queue
       const fetchUnassignedConversations = async () => {
         try {
-          const res = await axios.get(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/unassignedConversations`);
+          console.log('Fetching unassigned conversations...');
+          const res = await axios.get(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/unassignedConversations`);
+          console.log('Unassigned conversations response:', res.data);
           setMessageQueue(res.data);
         } catch (error) {
           console.error('Error fetching unassigned conversations:', error);
+          console.error('Error details:', error.response?.data);
         }
       };
 
@@ -128,7 +166,7 @@ const SmsPage = ({ isOpen }) => {
   const selectConversation = async (conversation) => {
     setSelectedConversation(conversation);
     try {
-      const res = await axios.get(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/conversationMessages/${conversation.conversation_id}`);
+      const res = await axios.get(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/conversationMessages/${conversation.conversation_id}`);
       setConversationMessages(res.data);
     } catch (err) {
       console.error('Error fetching messages:', err);
@@ -147,7 +185,7 @@ const SmsPage = ({ isOpen }) => {
   // function to handle new messages 
   const handleCompose = () => {
     // Perform the API call to send the message here
-    fetch(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/composeMessage`, {
+    fetch(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/composeMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -172,7 +210,7 @@ const SmsPage = ({ isOpen }) => {
     // Check if a conversation is selected
     if (selectedConversation) {
       // Perform the API call to send the message here
-      fetch(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/composeMessage`, {
+      fetch(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/composeMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -197,7 +235,7 @@ const SmsPage = ({ isOpen }) => {
   // Handle assigning message from queue to current agent
   const handleAssignMessage = async (index) => {
     try {
-      await axios.post(`http://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/assignAgent`, {
+      await axios.post(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}/api/conversations/assignAgent`, {
         conversation_id: messageQueue[index].conversation_id,
         user: username
       });

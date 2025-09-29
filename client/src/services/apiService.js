@@ -82,6 +82,11 @@ class ApiService {
     return response.data;
   }
 
+  async getDashboardMetrics() {
+    const response = await this.client.get('/users/dashboard-metrics');
+    return response.data;
+  }
+
   // Voice/Call Management
   async getQueueData() {
     const response = await this.client.get('/voice/queue');

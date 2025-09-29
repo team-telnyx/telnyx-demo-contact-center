@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useContext } from 'react';
-import { BrowserRouter as Router, Route, Routes, useRoutes, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Route, Routes, Navigate } from 'react-router-dom';
 import { ThemeProvider, CssBaseline } from '@mui/material';
 import theme from './components/Theme';
 import DashboardHeader from './components/DashboardHeader';
@@ -93,16 +93,19 @@ function AppContent() {
     const socket = io(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}`);
 
     socket.on("connect", () => {
-      console.log('Connected to the server');
+      console.log('App.js: Connected to the server');
+      console.log('App.js: Socket ID:', socket.id);
     });
 
     socket.on("NEW_MESSAGE", (msg) => {
+      console.log('App.js: NEW_MESSAGE received:', msg);
       if (msg.isAssigned && msg.assignedAgent === username) {
       setUnreadCount(prevCount => prevCount + 1);
       }
     });
 
     socket.on("NEW_CONVERSATION", (msg) => {
+      console.log('App.js: NEW_CONVERSATION received:', msg);
       setQueueUnreadCount(prevCount => prevCount + 1);
     });
 
@@ -128,6 +131,7 @@ function AppContent() {
       <SideNav isOpen={isOpen} unreadCount={unreadCount} />
       <div style={{ padding: theme.spacing(8, 2, 0, 2), width: '100%' }}>
         <Routes>
+          <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<MainContent isOpen={isOpen} />} />
           <Route path="phone" element={<PhonePage isOpen={isOpen} />} />
           <Route path="sms" element={<SmsPage isOpen={isOpen} />} />

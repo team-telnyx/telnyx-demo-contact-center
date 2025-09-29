@@ -292,10 +292,84 @@ router.get('/sip-credentials', authenticateUser, async (req, res) => {
     const decryptedSipPassword = decrypt(sipPassword);
     res.json({
       sipUsername,
-      sipPassword: decryptedSipPassword, 
+      sipPassword: decryptedSipPassword,
     });
   } catch (err) {
     res.status(500).send('Server error');
+  }
+});
+
+//===================== SECURED: GET DASHBOARD METRICS ENDPOINT =====================
+router.get('/dashboard-metrics', authenticateUser, async (req, res) => {
+  try {
+    const { username } = req.user;
+    const { Op } = require('sequelize');
+    const Voice = require('../models/Voice');
+    const CallSession = require('../models/CallSession');
+    const Conversations = require('../models/Conversations');
+    const Messages = require('../models/Messages');
+
+    // Get active calls for this agent
+    const activeCalls = await CallSession.count({
+      where: {
+        status: 'active'
+      }
+    });
+
+    const agentActiveCalls = await Voice.count({
+      where: {
+        accept_agent: username,
+        createdAt: {
+          [Op.gte]: new Date(Date.now() - 24 * 60 * 60 * 1000) // Last 24 hours
+        }
+      }
+    });
+
+    // Get queued messages assigned to this agent
+    const queuedMessages = await Conversations.count({
+      where: {
+        agent_assigned: username,
+        assigned: true
+      }
+    });
+
+    // Get all available agents (status = true)
+    const availableAgents = await User.count({
+      where: {
+        status: true
+      }
+    });
+
+    // Calculate average response time for this agent's calls in the last 24 hours
+    const recentCalls = await Voice.findAll({
+      where: {
+        accept_agent: username,
+        createdAt: {
+          [Op.gte]: new Date(Date.now() - 24 * 60 * 60 * 1000)
+        }
+      },
+      attributes: ['createdAt', 'updatedAt']
+    });
+
+    let avgResponseTime = '0s';
+    if (recentCalls.length > 0) {
+      const totalResponseTime = recentCalls.reduce((sum, call) => {
+        const responseTime = new Date(call.updatedAt) - new Date(call.createdAt);
+        return sum + responseTime;
+      }, 0);
+      const avgMs = totalResponseTime / recentCalls.length;
+      avgResponseTime = avgMs < 1000 ? `${Math.round(avgMs)}ms` : `${(avgMs / 1000).toFixed(1)}s`;
+    }
+
+    res.json({
+      activeCalls: agentActiveCalls || 0,
+      queuedMessages: queuedMessages || 0,
+      availableAgents: availableAgents || 0,
+      avgResponseTime: avgResponseTime
+    });
+  } catch (err) {
+    console.error('Dashboard metrics error:', err);
+    res.status(500).json({ error: 'Failed to fetch dashboard metrics' });
   }
 });
 

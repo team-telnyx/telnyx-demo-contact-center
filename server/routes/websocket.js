@@ -2,6 +2,8 @@ let io = null;
 let connectedAgents = new Map(); // Map of username -> Set of socket.ids
 let socketToAgent = new Map(); // Map of socket.id -> username
 let pendingCallAcceptances = new Map(); // Map of callControlId -> {username, socketId}
+let agentLastActivity = new Map(); // Map of username -> {socketId, lastActivity}
+let socketInfo = new Map(); // Map of socket.id -> {username, userAgent, timestamp}
 
 const initWebSocket = (server) => {
   io = require('socket.io')(server, {
@@ -16,7 +18,7 @@ const initWebSocket = (server) => {
 
     // Handle agent authentication/identification
     socket.on('identify', (data) => {
-      const { username } = data;
+      const { username, userAgent } = data;
       if (username) {
         // Add socket to agent's set of connections
         if (!connectedAgents.has(username)) {
@@ -24,8 +26,21 @@ const initWebSocket = (server) => {
         }
         connectedAgents.get(username).add(socket.id);
         socketToAgent.set(socket.id, username);
-        
-        console.log(`Agent identified: ${username} -> ${socket.id}`);
+
+        // Track socket info and update last activity
+        socketInfo.set(socket.id, {
+          username,
+          userAgent: userAgent || 'Unknown',
+          timestamp: new Date()
+        });
+
+        // Update last activity for this agent
+        agentLastActivity.set(username, {
+          socketId: socket.id,
+          lastActivity: new Date()
+        });
+
+        console.log(`Agent identified: ${username} -> ${socket.id} (${userAgent || 'Unknown device'})`);
         console.log(`Agent ${username} now has ${connectedAgents.get(username).size} connection(s)`);
         console.log('Connected agents:', Array.from(connectedAgents.keys()));
       }
@@ -36,20 +51,26 @@ const initWebSocket = (server) => {
       console.log('*** ACCEPT_CALL EVENT RECEIVED ***');
       console.log('Socket ID:', socket.id);
       console.log('Data received:', data);
-      
+
       const { callControlId } = data;
       const username = socketToAgent.get(socket.id);
-      
+
       console.log('Username for socket:', username);
       console.log('Call control ID:', callControlId);
-      
+
       if (username && callControlId) {
+        // Update last activity for this agent
+        agentLastActivity.set(username, {
+          socketId: socket.id,
+          lastActivity: new Date()
+        });
+
         // Track which specific socket/browser accepted this call
         pendingCallAcceptances.set(callControlId, {
           username: username,
           socketId: socket.id
         });
-        
+
         console.log(`*** CALL ACCEPTANCE TRACKED: ${callControlId} accepted by ${username} on socket ${socket.id} ***`);
         console.log('Current pending acceptances:', Array.from(pendingCallAcceptances.entries()));
       } else {
@@ -65,25 +86,39 @@ const initWebSocket = (server) => {
 
     socket.on('disconnect', () => {
       const username = socketToAgent.get(socket.id);
-      
+
       if (username) {
         // Remove this socket from agent's connections
         const agentSockets = connectedAgents.get(username);
         if (agentSockets) {
           agentSockets.delete(socket.id);
-          
+
           // If no more connections for this agent, remove from map
           if (agentSockets.size === 0) {
             connectedAgents.delete(username);
+            agentLastActivity.delete(username);
             console.log(`Agent fully disconnected: ${username}`);
           } else {
+            // If this was the last active socket, update to another socket
+            const lastActivity = agentLastActivity.get(username);
+            if (lastActivity && lastActivity.socketId === socket.id) {
+              // Pick another active socket for this agent
+              const remainingSockets = Array.from(agentSockets);
+              if (remainingSockets.length > 0) {
+                agentLastActivity.set(username, {
+                  socketId: remainingSockets[0],
+                  lastActivity: new Date()
+                });
+              }
+            }
             console.log(`Agent ${username} still has ${agentSockets.size} connection(s)`);
           }
         }
-        
+
         socketToAgent.delete(socket.id);
+        socketInfo.delete(socket.id);
       }
-      
+
       console.log('Client disconnected:', socket.id);
     });
   });
@@ -176,6 +211,35 @@ const broadcastToAcceptingSocket = (callControlId, type, data) => {
   return false;
 };
 
+// Broadcast to the most recently active device of a specific agent
+const broadcastToAgentPrimary = (username, type, data) => {
+  if (!io) {
+    console.error('WebSocket: Cannot broadcast, io is not initialized');
+    return false;
+  }
+
+  const lastActivity = agentLastActivity.get(username);
+  if (lastActivity) {
+    const { socketId } = lastActivity;
+    const socket = io.sockets.sockets.get(socketId);
+    const socketDetail = socketInfo.get(socketId);
+
+    if (socket) {
+      console.log(`WebSocket: Broadcasting ${type} to PRIMARY device for agent ${username}`);
+      console.log(`WebSocket: Target device: ${socketDetail?.userAgent || 'Unknown'} (${socketId})`);
+      console.log('WebSocket: Broadcast data:', JSON.stringify(data, null, 2));
+
+      socket.emit(type, data);
+      return true;
+    } else {
+      console.error(`WebSocket: Primary socket ${socketId} not found for agent ${username}`);
+    }
+  }
+
+  console.log(`WebSocket: No primary device found for agent ${username}, falling back to broadcastToAgent`);
+  return broadcastToAgent(username, type, data);
+};
+
 // Get connected agents
 const getConnectedAgents = () => {
   return Array.from(connectedAgents.keys());
@@ -187,11 +251,12 @@ const getAgentConnectionCount = (username) => {
   return agentSockets ? agentSockets.size : 0;
 };
 
-module.exports = { 
-  initWebSocket, 
-  broadcast, 
-  broadcastToAgent, 
+module.exports = {
+  initWebSocket,
+  broadcast,
+  broadcastToAgent,
+  broadcastToAgentPrimary,
   broadcastToAcceptingSocket,
-  getConnectedAgents, 
-  getAgentConnectionCount 
+  getConnectedAgents,
+  getAgentConnectionCount
 };

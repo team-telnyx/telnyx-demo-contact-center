@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { 
+import {
   Box,
   Typography,
   Grid,
@@ -7,13 +7,15 @@ import {
   CardContent,
   CardHeader,
   Alert,
-  Chip,
   List,
   ListItem,
   ListItemIcon,
   ListItemText,
   Paper,
-  Avatar
+  Avatar,
+  CircularProgress,
+  IconButton,
+  Tooltip
 } from '@mui/material';
 import {
   Dashboard as DashboardIcon,
@@ -21,13 +23,93 @@ import {
   Message as MessageIcon,
   Person as PersonIcon,
   CheckCircle as CheckCircleIcon,
-  Schedule as ScheduleIcon
+  Schedule as ScheduleIcon,
+  Refresh as RefreshIcon
 } from '@mui/icons-material';
 import { useAuth } from './AuthContext';
+import apiService from '../services/apiService';
+import { io } from "socket.io-client";
 
 const MainContent = ({ isOpen }) => {
   const { isLoggedIn, username } = useAuth();
   const marginLeft = isOpen ? '240px' : '64px';
+
+  const [dashboardMetrics, setDashboardMetrics] = useState({
+    activeCalls: 0,
+    queuedMessages: 0,
+    availableAgents: 0,
+    avgResponseTime: '0s'
+  });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (isLoggedIn) {
+      fetchDashboardMetrics();
+
+      // Set up real-time updates via socket
+      const socket = io(`https://${process.env.REACT_APP_API_HOST}:${process.env.REACT_APP_API_PORT}`);
+
+      socket.on("connect", () => {
+        console.log('Dashboard connected to socket');
+      });
+
+      // Listen for events that should trigger a metrics refresh
+      socket.on("NEW_CALL", () => {
+        fetchDashboardMetrics();
+      });
+
+      socket.on("CALL_ENDED", () => {
+        fetchDashboardMetrics();
+      });
+
+      // Event-driven metric updates
+      socket.on("NEW_MESSAGE", () => {
+        fetchDashboardMetrics();
+      });
+
+      socket.on("AGENT_STATUS_UPDATED", () => {
+        fetchDashboardMetrics();
+      });
+
+      // Listen for call events to update metrics
+      socket.on("NEW_CALL", () => {
+        fetchDashboardMetrics();
+      });
+
+      socket.on("CALL_HANGUP", () => {
+        fetchDashboardMetrics();
+      });
+
+      socket.on("CALL_ACCEPTED", () => {
+        fetchDashboardMetrics();
+      });
+
+      // Reduced polling frequency - most updates are now event-driven
+      const refreshInterval = setInterval(() => {
+        fetchDashboardMetrics();
+      }, 120000); // Every 2 minutes instead of 30 seconds
+
+      return () => {
+        socket.disconnect();
+        clearInterval(refreshInterval);
+      };
+    }
+  }, [isLoggedIn]);
+
+  const fetchDashboardMetrics = async () => {
+    try {
+      setLoading(true);
+      const metrics = await apiService.getDashboardMetrics();
+      setDashboardMetrics(metrics);
+      setError(null);
+    } catch (err) {
+      console.error('Failed to fetch dashboard metrics:', err);
+      setError('Failed to load dashboard data');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   if (!isLoggedIn) {
     return (
@@ -40,10 +122,10 @@ const MainContent = ({ isOpen }) => {
   }
 
   const dashboardStats = [
-    { title: 'Active Calls', value: '3', icon: PhoneIcon, color: 'primary' },
-    { title: 'Queue Messages', value: '7', icon: MessageIcon, color: 'info' },
-    { title: 'Available Agents', value: '12', icon: PersonIcon, color: 'success' },
-    { title: 'Avg Response Time', value: '2.4s', icon: ScheduleIcon, color: 'warning' }
+    { title: 'Your Active Calls', value: dashboardMetrics.activeCalls.toString(), icon: PhoneIcon, color: 'primary' },
+    { title: 'Assigned Messages', value: dashboardMetrics.queuedMessages.toString(), icon: MessageIcon, color: 'info' },
+    { title: 'Available Agents', value: dashboardMetrics.availableAgents.toString(), icon: PersonIcon, color: 'success' },
+    { title: 'Avg Response Time', value: dashboardMetrics.avgResponseTime, icon: ScheduleIcon, color: 'warning' }
   ];
 
   const recentActivity = [
@@ -55,20 +137,33 @@ const MainContent = ({ isOpen }) => {
 
   return (
     <Box sx={{ mt: 8, ml: marginLeft, p: 3 }}>
-      <Typography variant="h3" component="h1" gutterBottom sx={{ fontWeight: 600, mb: 4 }}>
-        Agent Dashboard
-      </Typography>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 4 }}>
+        <Typography variant="h3" component="h1" sx={{ fontWeight: 600 }}>
+          Agent Dashboard
+        </Typography>
+        <Tooltip title="Refresh Dashboard Data">
+          <IconButton onClick={fetchDashboardMetrics} disabled={loading} color="primary">
+            <RefreshIcon />
+          </IconButton>
+        </Tooltip>
+      </Box>
+
+      {error && (
+        <Alert severity="error" sx={{ mb: 3 }}>
+          {error}
+        </Alert>
+      )}
 
       <Grid container spacing={3} sx={{ mb: 4 }}>
         {dashboardStats.map((stat, index) => (
           <Grid item xs={12} sm={6} md={3} key={index}>
             <Card elevation={2}>
               <CardContent sx={{ textAlign: 'center' }}>
-                <Avatar 
-                  sx={{ 
-                    bgcolor: `${stat.color}.light`, 
+                <Avatar
+                  sx={{
+                    bgcolor: `${stat.color}.light`,
                     color: `${stat.color}.main`,
-                    mx: 'auto', 
+                    mx: 'auto',
                     mb: 2,
                     width: 56,
                     height: 56
@@ -77,7 +172,7 @@ const MainContent = ({ isOpen }) => {
                   <stat.icon fontSize="large" />
                 </Avatar>
                 <Typography variant="h4" component="div" sx={{ fontWeight: 600, mb: 1 }}>
-                  {stat.value}
+                  {loading ? <CircularProgress size={24} /> : stat.value}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
                   {stat.title}

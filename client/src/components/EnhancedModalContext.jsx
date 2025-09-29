@@ -118,28 +118,7 @@ export const EnhancedModalProvider = ({ children }) => {
         // Log all available events for debugging
         console.log('Call object methods/properties:', Object.getOwnPropertyNames(newCall));
         
-        // Enhanced periodic checking for call state and remote hangup detection
-        const stateCheckInterval = setInterval(() => {
-          console.log('⏰ Call state check:', newCall.state, 'Active:', newCall.active, 'ID:', newCall.id);
-
-          // Check for ended states - including more comprehensive state checking
-          if (newCall.state === 'ended' ||
-              newCall.state === 'hangup' ||
-              newCall.state === 'terminated' ||
-              newCall.state === 'destroyed' ||
-              !newCall.active) {
-            console.log('🔴 Periodic check detected call end - notifying CallManager', 'State:', newCall.state, 'Active:', newCall.active);
-            clearInterval(stateCheckInterval);
-            if (handleWebRTCCall) {
-              handleWebRTCCall(newCall, 'HANGUP');
-            }
-          }
-        }, 1000); // Check every 1 second for faster detection
-        
-        // Clear interval after 5 minutes to prevent memory leaks
-        setTimeout(() => {
-          clearInterval(stateCheckInterval);
-        }, 300000);
+        // REMOVED: Periodic state checking - now redundant since event listeners handle hangup detection properly
       }
       
       // Let CallManager handle the outbound call
@@ -265,28 +244,7 @@ export const EnhancedModalProvider = ({ children }) => {
             }
           });
 
-          // Enhanced periodic checking for incoming call state and remote hangup detection
-          const stateCheckInterval = setInterval(() => {
-            console.log('Incoming Call state check:', call.state, 'Active:', call.active);
-
-            // Check for ended states - including more comprehensive state checking
-            if (call.state === 'ended' ||
-                call.state === 'hangup' ||
-                call.state === 'terminated' ||
-                call.state === 'destroyed' ||
-                !call.active) {
-              console.log('Incoming Call ended - notifying CallManager', 'State:', call.state, 'Active:', call.active);
-              clearInterval(stateCheckInterval);
-              if (handleWebRTCCall) {
-                handleWebRTCCall(call, 'HANGUP');
-              }
-            }
-          }, 1000); // Check every 1 second for faster detection
-
-          // Clear interval after 5 minutes to prevent memory leaks
-          setTimeout(() => {
-            clearInterval(stateCheckInterval);
-          }, 300000);
+          // REMOVED: Periodic state checking for incoming calls - event listeners are sufficient
         }
 
         // Check for hangup/ended states specifically - enhanced detection

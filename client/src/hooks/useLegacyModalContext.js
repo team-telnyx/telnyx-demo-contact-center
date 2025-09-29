@@ -23,10 +23,32 @@ export const useLegacyModalContext = () => {
     activeCall: callActions.activeCall,
     callControlId: callActions.activeCall?.callControlId,
     
-    // Legacy methods that might not be fully implemented
-    handleHold: () => console.warn('Hold not implemented in new system'),
-    handleUnhold: () => console.warn('Unhold not implemented in new system'),
-    onHold: false,
+    // Hold functionality using WebRTC call.hold()
+    handleHold: () => {
+      if (callActions.activeCall && callActions.activeCall.type === 'webrtc' && callActions.activeCall.callObject) {
+        try {
+          console.log('Putting WebRTC call on hold');
+          callActions.activeCall.callObject.hold();
+        } catch (error) {
+          console.error('Error putting call on hold:', error);
+        }
+      } else {
+        console.warn('Hold not available - no active WebRTC call');
+      }
+    },
+    handleUnhold: () => {
+      if (callActions.activeCall && callActions.activeCall.type === 'webrtc' && callActions.activeCall.callObject) {
+        try {
+          console.log('Taking WebRTC call off hold');
+          callActions.activeCall.callObject.unhold();
+        } catch (error) {
+          console.error('Error taking call off hold:', error);
+        }
+      } else {
+        console.warn('Unhold not available - no active WebRTC call');
+      }
+    },
+    onHold: callActions.callState === 'HOLDING',
     
     // Additional properties that were in old context
     isModalOpen: callActions.isCallModalOpen,

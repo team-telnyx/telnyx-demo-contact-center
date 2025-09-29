@@ -1,7 +1,8 @@
-import React, { useState, useContext, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from './AuthContext';
-import { SIPCredentialsContext } from './SIPCredentialsContext';
-import { useLegacyModalContext } from '../hooks/useLegacyModalContext';  
+// import { SIPCredentialsContext } from './SIPCredentialsContext'; // No longer needed
+import { useLegacyModalContext } from '../hooks/useLegacyModalContext';
+import { useCallManager } from '../contexts/CallManagerContext';  
 import { 
   Grid, 
   Card, 
@@ -22,43 +23,25 @@ import {
   Typography,
   Box,
   Paper,
-  Chip,
-  IconButton,
-  Tooltip
+  Chip
 } from '@mui/material'; 
 import { 
   Phone as PhoneIcon,
   PhoneCallback as PhoneCallbackIcon,
   Clear as ClearIcon,
-  SwapHoriz as TransferIcon,
   Schedule as ScheduleIcon,
   Person as PersonIcon
 } from '@mui/icons-material';
-import axios from 'axios';
-import { io } from "socket.io-client";
 import { useUnreadCount } from './UnreadCount';
-import { getApiBaseUrl, getWebSocketUrl } from '../utils/apiUtils';
+import apiService from '../services/apiService';
 
 const getAgentsWithTag = async (tag) => {
   try {
-    const token = localStorage.getItem('token');
-    const response = await axios.get(`${getApiBaseUrl()}/api/telnyx/phone-numbers`, {
-      params: {
-        tag: tag,
-        page: 1,
-        size: 20,
-      },
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-    });
-
-    const agentNumbers = response.data.data || [];
-    return agentNumbers;
+    const response = await apiService.getAgentsWithTag(tag, 1, 20);
+    return response.data || [];
   } catch (error) {
     console.error('Error fetching agent numbers:', error);
-    console.error('Response:', error.response?.data);
+    // apiService handles 401 errors and redirects to login automatically
     return [];
   }
 };
@@ -70,20 +53,18 @@ const PhonePage = ({ isOpen }) => {
   const marginLeft = isOpen ? '240px' : '64px';
   const [agentNumbers, setAgentNumbers] = useState([]);
   const [callerNumber, setCallerNumber] = useState('');
-  const [queueData, setQueueData] = useState([]);
   const [agentQueueData, setAgentQueueData] = useState([]);
-  const [outboundCCID, setoutboundCCID] = useState([]);
-  const [webrtcOutboundCCID, setwebrtcOutboundCCID] = useState([]);
-  const sipCredentials = useContext(SIPCredentialsContext); // Use SIPCredentialsContext
-  const sipUsername = sipCredentials.login;
+
+  // Use queue data from CallManagerContext instead of local polling
+  const { incomingCalls: queueData, acceptQueueCall } = useCallManager();
+  // const sipCredentials = useContext(SIPCredentialsContext); // No longer needed since using apiService
   const { setCallQueueUnreadCount } = useUnreadCount();
-  const [isQueuePollingEnabled, setIsQueuePollingEnabled] = useState(true);
   
   const {
     clientStatus,
     callState,
     dialNumber,
-    callerInfo,
+    // callerInfo, // Not used in PhonePage
     handleDialClick,
     handleCall,
     handleHangUp,
@@ -91,8 +72,8 @@ const PhonePage = ({ isOpen }) => {
     handleHold,
     handleUnhold,
     onHold,
-    activeCall,
-    callControlId
+    activeCall
+    // callControlId // Not used in PhonePage
   } = useLegacyModalContext();  // Use legacy compatibility layer
   
   // Handle keyboard input for dialer
@@ -130,43 +111,11 @@ const PhonePage = ({ isOpen }) => {
   }, [handleDialClick, handleBackspace]);
 
   useEffect(() => {
-    //get outbound calll control id from websocket
-    const socket = io(getWebSocketUrl());
-    socket.on('connect', () => {
-      console.log('Connected to websocket');
-    });
-    socket.on('disconnect', () => {
-      console.log('Disconnected from websocket');
-    });
-    socket.on('OutboundCCID', (data) => {
-      console.log('OutboundCCID:', data);
-      setoutboundCCID(data);
-      // Re-enable queue polling when outbound call is initiated
-      if (data) {
-        setIsQueuePollingEnabled(true);
-      }
-    });
-    socket.on('WebRTC_OutboundCCID', (data) => {
-      console.log('WebRTC_OutboundCCID:', data);
-      setwebrtcOutboundCCID(data);
-      // Re-enable queue polling when WebRTC outbound call is initiated
-      if (data) {
-        setIsQueuePollingEnabled(true);
-      }
-    });
-    
-    // Listen for new calls to re-enable polling
-    socket.on('NEW_CALL', (data) => {
-      console.log('NEW_CALL received:', data);
-      setIsQueuePollingEnabled(true);
-    });
-    
-    // Listen for call hangup events to close modal
-    socket.on('CALL_HANGUP', (hangupData) => {
-      console.log('PhonePage: Call hangup received:', hangupData);
-      // Force close modal by resetting call state if this matches current call
-      // This is a fallback in case CallManagerContext doesn't handle it
-    });
+    // REMOVED: Duplicate websocket connection that was interfering with CallManagerContext
+    // CallManagerContext already handles all call-related websocket events including:
+    // - NEW_CALL, CALL_HANGUP, CALL_ACCEPTED, etc.
+    // - OutboundCCID and WebRTC_OutboundCCID should be handled there if needed
+
     setCallQueueUnreadCount(0);
     const fetchAgentNumbers = async () => {
       if (username) {
@@ -188,81 +137,42 @@ const PhonePage = ({ isOpen }) => {
   }, [username, setCallQueueUnreadCount]);
 
   useEffect(() => {
-    const fetchAllData = async () => {
-        await fetchAgentData();
-        // Only fetch queue data if polling is enabled
-        if (isQueuePollingEnabled) {
-          await fetchQueueData();
-        }
-    };
-
-    fetchAllData();  // Initial fetch
-
-    const intervalId = setInterval(fetchAllData, 5000);  // Fetch every 5 seconds
-    return () => clearInterval(intervalId);  // Clear interval on component unmount
-  }, [callControlId, isQueuePollingEnabled]);
+    // Only fetch agent data since queue data is handled by CallManagerContext via WebSocket
+    fetchAgentData();
+  }, []);
 
   
 
   const fetchAgentData = async () => {
     try {
-      const response = await axios.get(`${getApiBaseUrl()}/api/users/agents`);
-      const filteredAgents = response.data.filter(agent => agent.username !== username);
+      const agents = await apiService.getAgents();
+      const filteredAgents = agents.filter(agent => agent.username !== username);
       setAgentQueueData(filteredAgents);
     } catch (error) {
       console.error('Error fetching agent data:', error);
+      // apiService handles 401 errors and redirects to login automatically
     }
   };
 
-  const fetchQueueData = async () => {
+  // REMOVED: fetchQueueData - now using CallManagerContext.incomingCalls which is updated via WebSocket
+  // CallAcceptButton component
+const CallAcceptButton = ({ call }) => {
+  const handleAccept = async () => {
     try {
-      const response = await fetch(`${getApiBaseUrl()}/api/voice/queue`);
-      if (!response.ok) {
-        // Check if it's a 404 error indicating queue doesn't exist
-        if (response.status === 404) {
-          console.log('Queue not found (404), disabling polling until call.initiated');
-          setIsQueuePollingEnabled(false);
-          setQueueData([]);
-          return;
-        }
-        throw new Error('Network response was not ok ' + response.statusText);
+      console.log('PhonePage: Accepting call via CallManagerContext:', call);
+      const result = await acceptQueueCall(call);
+      if (!result?.success) {
+        console.error('PhonePage: Failed to accept call:', result?.error);
       }
-      const data = await response.json();
-      console.log(data);
-      setQueueData(data.data);
     } catch (error) {
-      console.error('There has been a problem with your fetch operation:', error);
+      console.error('PhonePage: Error accepting call:', error);
     }
   };
-  // CallTransferButton component
-const CallAcceptButton = ({ callControlId, callerId }) => {  
-  const handleTransfer = async () => {
-    await fetch(`${getApiBaseUrl()}/api/voice/accept-call`, {
-      method: 'POST',
-      body: JSON.stringify({ sipUsername: sipUsername, callControlId: callControlId, callerId: callerId }),  // include callControlId here
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
-  };
 
-  return <Button primary size="small" onClick={handleTransfer}>Accept</Button>;
+  return <Button primary size="small" onClick={handleAccept}>Accept</Button>;
 };
 
 
-  const AgentCallTransferButton = ({ callControlId, agentUsername, callState, agentStatus, callerId, outboundCCID }) => {  
-    const isDisabled = callState !== "ACTIVE" || !agentStatus;
-    const handleTransfer = async () => {
-      await fetch(`${getApiBaseUrl()}/api/voice/transfer`, {
-        method: 'POST',
-        body: JSON.stringify({ sipUsername: agentUsername, callerId: callerId, outboundCCID: outboundCCID, callControlId: callControlId }),
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-    };
-    return <Button primary size="small" onClick={handleTransfer} disabled={isDisabled}>Transfer</Button>;
-  };
 
   // Warm transfer components removed
 
@@ -273,8 +183,6 @@ const CallAcceptButton = ({ callControlId, callerId }) => {
       </div>
     );
   }
-  console.log("OUTBOUND CCID", outboundCCID)
-  const options = agentNumbers.map((num, index) => ({ key: index, text: num, value: num }));
   return (
     <Box sx={{ mt: 8, ml: marginLeft, p: 3 }}>
       <Typography variant="h3" component="h1" gutterBottom sx={{ fontWeight: 600, mb: 3 }}>
@@ -462,33 +370,38 @@ const CallAcceptButton = ({ callControlId, callerId }) => {
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {Array.isArray(queueData) && queueData.map((call, index) => (
-                      <TableRow key={index} hover>
-                        <TableCell>
-                          <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                            {call.from}
-                          </Typography>
-                        </TableCell>
-                        <TableCell>{call.to}</TableCell>
-                        <TableCell>
-                          <Chip 
-                            label={`${call.wait_time_secs}s`}
-                            size="small"
-                            color={call.wait_time_secs > 60 ? 'error' : 'default'}
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <Chip 
-                            label={call.queue_position}
-                            size="small"
-                            variant="outlined"
-                          />
-                        </TableCell>
-                        <TableCell align="center">
-                          <CallAcceptButton callControlId={call.call_control_id} callerId={call.from} />
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {Array.isArray(queueData) && queueData.map((call, index) => {
+                      // Calculate wait time from timestamp
+                      const waitTime = call.timestamp ? Math.floor((Date.now() - new Date(call.timestamp).getTime()) / 1000) : 0;
+
+                      return (
+                        <TableRow key={call.id || index} hover>
+                          <TableCell>
+                            <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                              {call.from}
+                            </Typography>
+                          </TableCell>
+                          <TableCell>{call.to}</TableCell>
+                          <TableCell>
+                            <Chip
+                              label={`${waitTime}s`}
+                              size="small"
+                              color={waitTime > 60 ? 'error' : 'default'}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Chip
+                              label={index + 1}
+                              size="small"
+                              variant="outlined"
+                            />
+                          </TableCell>
+                          <TableCell align="center">
+                            <CallAcceptButton call={call} />
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                     {(!Array.isArray(queueData) || queueData.length === 0) && (
                       <TableRow>
                         <TableCell colSpan={5} align="center" sx={{ py: 4 }}>
@@ -544,14 +457,6 @@ const CallAcceptButton = ({ callControlId, callerId }) => {
                         </TableCell>
                         <TableCell align="center">
                           <Box sx={{ display: 'flex', gap: 1, justifyContent: 'center', flexWrap: 'wrap' }}>
-                            <AgentCallTransferButton 
-                              agentUsername={agent.username} 
-                              callerId={callerInfo} 
-                              callState={callState} 
-                              agentStatus={agent.status} 
-                              callControlId={callControlId} 
-                              outboundCCID={outboundCCID}
-                            />
                             {/* Warm transfer buttons removed */}
                           </Box>
                         </TableCell>

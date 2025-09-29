@@ -171,14 +171,17 @@ router.post('/webhook', async (req, res) => {
 
 router.get('/unassignedConversations', async (req, res) => {
   try {
+    console.log('Fetching unassigned conversations from database...');
     const conversations = await Conversations.findAll({
       where: {
         agent_assigned: null,
       },
     });
+    console.log('Found unassigned conversations:', conversations.length);
+    console.log('Conversations data:', JSON.stringify(conversations, null, 2));
     res.json(conversations);
   } catch (err) {
-    console.error(err);
+    console.error('Error in unassignedConversations:', err);
     res.status(500).send('Server Error');
   }
 });

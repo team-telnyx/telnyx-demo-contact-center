@@ -84,8 +84,11 @@ export const CallManagerProvider = ({ children }) => {
 
     socketConnection.on('connect', () => {
       console.log('CallManager: Connected to websocket');
-      // Identify this agent to the server
-      socketConnection.emit('identify', { username });
+      // Identify this agent to the server with device info
+      socketConnection.emit('identify', {
+        username,
+        userAgent: navigator.userAgent
+      });
       console.log('CallManager: *** WEBSOCKET CONNECTED SUCCESSFULLY ***');
       console.log('CallManager: Socket ID:', socketConnection.id);
 
@@ -207,6 +210,41 @@ export const CallManagerProvider = ({ children }) => {
       console.log('CallManager: Transfer failed:', transferData);
     };
 
+    const onIncomingTransfer = (transferData) => {
+      console.log('CallManager: *** WEBSOCKET EVENT RECEIVED: INCOMING_TRANSFER ***');
+      console.log('CallManager: Incoming transfer for this agent:', transferData);
+
+      // Create a new incoming call for the transfer
+      const transferCall = {
+        id: transferData.newAgentCallId,
+        callControlId: transferData.newAgentCallId,
+        from: transferData.callerId?.number || 'Transfer Call',
+        to: 'Transfer',
+        direction: 'inbound',
+        type: 'queue',
+        timestamp: new Date().toISOString(),
+        isTransfer: true,
+        originalCallId: transferData.customerCallId,
+        fromAgent: transferData.fromAgent
+      };
+
+      // Add to incoming calls and show modal
+      setIncomingCalls(prev => [...prev, transferCall]);
+      setActiveCall(transferCall);
+      setCallState('INCOMING');
+      setIsCallModalOpen(true);
+    };
+
+    const onTransferAccepted = (transferData) => {
+      console.log('CallManager: *** WEBSOCKET EVENT RECEIVED: TRANSFER_ACCEPTED ***');
+      console.log('CallManager: Transfer accepted and connected:', transferData);
+
+      // Update active call to connected state
+      if (activeCall && activeCall.id === transferData.newAgentCallId) {
+        setCallState('ACTIVE');
+      }
+    };
+
     // Ensure previous listeners are removed before adding
     socket.off('NEW_CALL');
     socket.off('CALL_UPDATE');
@@ -215,6 +253,8 @@ export const CallManagerProvider = ({ children }) => {
     socket.off('TRANSFER_INITIATED');
     socket.off('TRANSFER_COMPLETED');
     socket.off('TRANSFER_FAILED');
+    socket.off('INCOMING_TRANSFER');
+    socket.off('TRANSFER_ACCEPTED');
     socket.off('CALL_BRIDGED');
 
     socket.on('NEW_CALL', onNewCall);
@@ -224,6 +264,8 @@ export const CallManagerProvider = ({ children }) => {
     socket.on('TRANSFER_INITIATED', onTransferInitiated);
     socket.on('TRANSFER_COMPLETED', onTransferCompleted);
     socket.on('TRANSFER_FAILED', onTransferFailed);
+    socket.on('INCOMING_TRANSFER', onIncomingTransfer);
+    socket.on('TRANSFER_ACCEPTED', onTransferAccepted);
     socket.on('CALL_BRIDGED', onCallBridged);
 
     return () => {
@@ -234,6 +276,8 @@ export const CallManagerProvider = ({ children }) => {
       socket.off('TRANSFER_INITIATED', onTransferInitiated);
       socket.off('TRANSFER_COMPLETED', onTransferCompleted);
       socket.off('TRANSFER_FAILED', onTransferFailed);
+      socket.off('INCOMING_TRANSFER', onIncomingTransfer);
+      socket.off('TRANSFER_ACCEPTED', onTransferAccepted);
       socket.off('CALL_BRIDGED', onCallBridged);
     };
   }, [socket, handleIncomingQueueCall, handleCallUpdate, handleCallHangup, handleCallAccepted, handleTransferCompleted, buildActiveCallFromSession]);
@@ -267,10 +311,16 @@ export const CallManagerProvider = ({ children }) => {
     setModalType('queue');
     setIsCallModalOpen(true);
 
-    // Remove from incoming calls if it exists
-    setIncomingCalls(prev => prev.filter(call =>
-      call.callControlId !== callData.customerCallId
-    ));
+    // Remove from incoming calls if it exists (customerCallId matches the original callControlId)
+    setIncomingCalls(prev => {
+      console.log('🎯 CallManager: Current incoming calls before removal:', prev.map(c => ({ id: c.id, callControlId: c.callControlId })));
+      console.log('🎯 CallManager: Looking to remove call with customerCallId:', callData.customerCallId);
+
+      const filtered = prev.filter(call => call.callControlId !== callData.customerCallId);
+
+      console.log('🎯 CallManager: Incoming calls after removal:', filtered.map(c => ({ id: c.id, callControlId: c.callControlId })));
+      return filtered;
+    });
 
     console.log('🎯 CallManager: Active call set for accepted call, modal opened');
   }, []);
@@ -579,21 +629,14 @@ export const CallManagerProvider = ({ children }) => {
       });
       
       if (result) {
-        // Update call state
-        const updatedCall = { ...call, state: 'ACCEPTED' };
-        setActiveCall(updatedCall);
-        setCallState('ACTIVE');
-        
-        // Open modal for accepted call
-        setModalType('queue');
-        setIsCallModalOpen(true);
-        
-        // Remove from incoming calls
+        console.log('CallManager: Call accepted successfully, waiting for CALL_ACCEPTED WebSocket event to set active call');
+
+        // Remove from incoming calls immediately (prevent duplicate)
         setIncomingCalls(prev => prev.filter(c => c.id !== call.id));
-        
-        // Add to history
-        setCallHistory(prev => [...prev, updatedCall]);
-        
+
+        // Don't set activeCall here - let CALL_ACCEPTED WebSocket event handle it
+        // This prevents duplicate calls in the system
+
         return { success: true };
       }
     } catch (error) {
