@@ -5,9 +5,11 @@ const session = require('express-session');
 const cors = require('cors');
 const path = require('path');
 const userRoutes = require('./routes/userRoutes');
-const voiceRoutes = require('./routes/voiceRoutes');
+const inboundVoiceRoutes = require('./routes/inboundVoiceRoutes');
+const outboundVoiceRoutes = require('./routes/outboundVoiceRoutes');
 const conversationRoutes = require('./routes/conversationRoutes');
 const telnyxRoutes = require('./routes/telnyxRoutes');
+const sseRoutes = require('./routes/sseRoutes');
 const bodyParser = require('body-parser');
 const sequelize = require('./config/database'); // Importing database config
 const fs = require('fs');
@@ -67,7 +69,18 @@ app.use(
 );
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: [
+    'http://localhost:3001',
+    'http://localhost:3000',
+    'https://localhost:3001',
+    'https://localhost:3000',
+    'https://telnyx.solutions'
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
 app.use(bodyParser.json({limit: '20mb'}));
 
 // User Routes
@@ -80,8 +93,11 @@ if (require('fs').existsSync(clientBuildPath)) {
 
 app.use('/api/users', userRoutes);
 app.use('/api/conversations', conversationRoutes);
-app.use('/api/voice', voiceRoutes);
+app.use('/api/voice', inboundVoiceRoutes);
+app.use('/api/voice', outboundVoiceRoutes);
 app.use('/api/telnyx', telnyxRoutes);
+app.use('/api/sse', sseRoutes);
+app.use('/api/events', sseRoutes);  // Also mount at /api/events for consistency
 
 // Serve React app for all non-API routes (SPA support)
 if (require('fs').existsSync(clientBuildPath)) {

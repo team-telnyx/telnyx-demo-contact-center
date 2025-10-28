@@ -4,17 +4,7 @@ const Messages = require('../models/Messages'); // Import your model
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const crypto = require('crypto');
-
-// Initialize telnyx client with error handling
-let telnyx = null;
-try {
-  if (process.env.TELNYX_API) {
-    const telnyxLib = require('telnyx');
-    telnyx = telnyxLib(process.env.TELNYX_API);
-  }
-} catch (error) {
-  console.warn('Telnyx client initialization failed in conversationRoutes:', error.message);
-}
+const axios = require('axios');
 const { Op } = require("sequelize");
 const { broadcast } = require('./websocket');
 
@@ -26,24 +16,61 @@ function hash(arr) {
   return hash.digest('hex');
 }
 
-router.post('/composeMessage', (req, res) => {
+router.post('/composeMessage', async (req, res) => {
     const fromPhoneNumber = req.body.From; // Agent's number
     const messageBody = req.body.Text; // The message body
     const dstNum = req.body.To; // Destination number (Customer's number)
+    const agentUsername = req.body.agentUsername; // Agent username for assignment
 
-    telnyx.messages.create({
-      from: fromPhoneNumber,
-      to: dstNum,
-      text: messageBody,
-    })
-      .then(() => {
-        console.log('Message composed and sent.');
-        res.sendStatus(200);
-      })
-      .catch((err) => {
-        console.error('Error sending composed message:', err.raw.errors);
-        res.sendStatus(500);
+    try {
+      // Send message via Telnyx
+      await axios.post('https://api.telnyx.com/v2/messages', {
+        from: fromPhoneNumber,
+        to: dstNum,
+        text: messageBody,
+      }, {
+        headers: { 'Authorization': `Bearer ${process.env.TELNYX_API}` }
       });
+      console.log('Message composed and sent.');
+
+      // Find or create conversation
+      const phone_number_array = [fromPhoneNumber, dstNum].sort();
+      const conversation_id = hash(phone_number_array);
+
+      let conversation = await Conversations.findOne({
+        where: { conversation_id: conversation_id }
+      });
+
+      if (!conversation) {
+        // Create new conversation and auto-assign to the composing agent
+        conversation = await Conversations.create({
+          id: uuidv4(),
+          conversation_id: conversation_id,
+          from_number: fromPhoneNumber,
+          to_number: dstNum,
+          agent_assigned: agentUsername || null,
+          assigned: agentUsername ? true : false,
+          tag: null
+        });
+        console.log(`New conversation created and assigned to: ${agentUsername}`);
+      } else if (!conversation.agent_assigned && agentUsername) {
+        // If conversation exists but unassigned, assign it to the composing agent
+        await conversation.update({
+          agent_assigned: agentUsername,
+          assigned: true
+        });
+        console.log(`Existing conversation assigned to: ${agentUsername}`);
+      }
+
+      // Don't create message here - let message.sent webhook handle it
+      // Just return success so UI knows the request went through
+      res.status(200).json({
+        success: true
+      });
+    } catch (err) {
+      console.error('Error sending composed message:', err.response?.data || err.message);
+      res.status(500).json({ success: false, error: err.message });
+    }
   });
 
 // Webhook for incoming messages
@@ -110,18 +137,20 @@ router.post('/webhook', async (req, res) => {
       }
     });
   }
-  if (payload.direction === 'outbound' && event_type === 'message.finalized') {
+  // Handle message.sent - create the message record with text from this event
+  if (payload.direction === 'outbound' && event_type === 'message.sent') {
     const fromPhoneNumber = payload.from.phone_number;
     const toPhoneNumber = payload.to[0].phone_number;
-    const messageText = payload.text;  // Add this line to capture the message text
-    const messageType = payload.type;  // Add this line to capture the message type
+    const messageText = payload.text;  // Use text from message.sent
+    const messageType = payload.type;
+    const messageId = payload.id;  // Telnyx message ID to track it
     const tags = payload.tags.length > 0 ? payload.tags[0] : null;
 
     const phone_number_array = [fromPhoneNumber, toPhoneNumber].sort();
     const conversation_id = hash(phone_number_array);
 
     let conversation = await Conversations.findOne({
-      where: { 
+      where: {
         conversation_id: conversation_id
       }
     });
@@ -129,11 +158,11 @@ router.post('/webhook', async (req, res) => {
     if (!conversation) {
       const newConversation = await Conversations.create({
         id: uuidv4(),
-        conversation_id: uuidv4(),
+        conversation_id: conversation_id,
         from_number: fromPhoneNumber,
         to_number: toPhoneNumber,
-        agent_assigned: "agent1",
-        assigned: true,
+        agent_assigned: null,
+        assigned: false,
         tag: tags
       });
       broadcast('NEW_CONVERSATION', newConversation);
@@ -142,18 +171,19 @@ router.post('/webhook', async (req, res) => {
        console.log("Conversation already exists. Skipping create operation.");
     }
 
+    // Create message record using text from message.sent
     const newMessage = await Messages.create({
-      id: uuidv4(),
+      id: messageId,  // Use Telnyx message ID so we can find it for updates
       type: messageType,
       direction: 'outbound',
       telnyx_number: fromPhoneNumber,
       destination_number: toPhoneNumber,
       text_body: messageText,
       tag: tags,
-      conversation_id: conversation.conversation_id  // Link the message to the conversation
+      conversation_id: conversation.conversation_id
     });
     broadcast('NEW_MESSAGE', newMessage);
-    
+
     // Update the last message in the conversation
     await Conversations.update({
       last_message: messageText,
@@ -162,6 +192,17 @@ router.post('/webhook', async (req, res) => {
         conversation_id: conversation.conversation_id
       }
     });
+  }
+
+  // Handle message.finalized - update the message status
+  if (payload.direction === 'outbound' && event_type === 'message.finalized') {
+    const messageId = payload.id;
+    const status = payload.to[0].status;  // Final delivery status
+
+    console.log(`Message finalized: ${messageId}, status: ${status}`);
+
+    // Update existing message with final status (optional - you can add a status column)
+    // For now we'll just log it, but you could add a 'status' column to Messages model
   }
 
   res.json({ status: "ok" });

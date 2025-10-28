@@ -1,62 +1,48 @@
 {
-  "name": "contact-center-v2-demo",
+  "name": "nextjs-contact-center",
   "version": "0.1.0",
   "private": true,
+  "scripts": {
+    "dev": "next dev --port 3001 --turbo",
+    "dev:https": "next dev --port 3001 --experimental-https --turbo",
+    "build": "next build",
+    "start": "next start --port 3001",
+    "lint": "eslint"
+  },
   "dependencies": {
     "@emotion/react": "^11.11.1",
     "@emotion/styled": "^11.11.0",
     "@mui/icons-material": "^5.14.6",
     "@mui/material": "^5.14.6",
-    "@mui/material-next": "^6.0.0-alpha.99",
     "@telnyx/react-client": "^1.0.2",
     "@telnyx/webrtc": "^2.22.15",
-    "@testing-library/jest-dom": "^5.17.0",
-    "@testing-library/react": "^13.4.0",
-    "@testing-library/user-event": "^13.5.0",
     "axios": "^1.6.0",
     "bootstrap": "^5.3.1",
+    "clsx": "^2.1.1",
     "dotenv": "^16.3.1",
-    "dotenv-webpack": "^8.0.1",
     "js-sha256": "^0.9.0",
     "jwt-decode": "^4.0.0",
+    "lucide-react": "^0.548.0",
+    "next": "15.5.4",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-draggable": "^4.4.6",
-    "react-router-dom": "^6.15.0",
-    "react-scripts": "^5.0.1",
     "semantic-ui-css": "^2.5.0",
     "semantic-ui-react": "^2.1.4",
-    "socket.io-client": "^4.7.2",
-    "web-vitals": "^2.1.4"
+    "socket.io-client": "^4.8.1"
   },
-  "scripts": {
-    "start": "PORT=3001 react-scripts start",
-    "start:https": "PORT=3001 HTTPS=true SSL_CRT_FILE=cert.pem SSL_KEY_FILE=key.pem react-scripts start",
-    "start:ngrok": "node start-with-ngrok.js",
-    "open:ngrok": "open https://frontend.telnyx.solutions",
-    "build": "react-scripts build",
-    "serve:https": "node https-server.js",
-    "build:serve": "npm run build && npm run serve:https",
-    "build:serve:ngrok": "npm run build && npm run serve:https && npm run open:ngrok",
-    "test": "react-scripts test",
-    "eject": "react-scripts eject"
-  },
-  "eslintConfig": {
-    "extends": [
-      "react-app",
-      "react-app/jest"
-    ]
-  },
-  "browserslist": {
-    "production": [
-      ">0.2%",
-      "not dead",
-      "not op_mini all"
-    ],
-    "development": [
-      "last 1 chrome version",
-      "last 1 firefox version",
-      "last 1 safari version"
-    ]
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@testing-library/jest-dom": "^5.17.0",
+    "@testing-library/react": "^13.4.0",
+    "@testing-library/user-event": "^13.5.0",
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "eslint": "^9",
+    "eslint-config-next": "15.5.4",
+    "tailwindcss": "^4",
+    "typescript": "^5"
   }
 }

@@ -109,21 +109,203 @@ router.post('/hangup-call/:callControlId', authenticateUser, async (req, res) =>
 router.post('/bridge-calls', authenticateUser, async (req, res) => {
   try {
     const { callControlId, bridgeToCallControlId, parkAfterUnbridge } = req.body;
-    
+
     if (!callControlId || !bridgeToCallControlId) {
       return res.status(400).json({ error: 'Both call control IDs are required' });
     }
-    
+
     const result = await telnyxService.bridgeCalls(
-      callControlId, 
-      bridgeToCallControlId, 
+      callControlId,
+      bridgeToCallControlId,
       parkAfterUnbridge
     );
     res.json(result);
-    
+
   } catch (error) {
     console.error('Error bridging calls:', error);
     res.status(500).json({ error: 'Failed to bridge calls' });
+  }
+});
+
+//===================== NUMBER MANAGEMENT ENDPOINTS =====================
+
+// Get all phone numbers (for admin dashboard)
+router.get('/all-phone-numbers', authenticateUser, async (req, res) => {
+  try {
+    const axios = require('axios');
+    const { page = 1, size = 100 } = req.query;
+
+    console.log('Fetching all phone numbers from Telnyx API');
+
+    const response = await axios.get('https://api.telnyx.com/v2/phone_numbers', {
+      headers: {
+        'Authorization': `Bearer ${process.env.TELNYX_API}`,
+        'Content-Type': 'application/json'
+      },
+      params: {
+        'page[number]': page,
+        'page[size]': size
+      }
+    });
+
+    const phoneNumbers = response.data.data.map(number => ({
+      id: number.id,
+      phone_number: number.phone_number,
+      status: number.status,
+      tags: number.tags || [],
+      connection_name: number.connection_name,
+      messaging_profile_name: number.messaging_profile_name
+    }));
+
+    res.json({
+      data: phoneNumbers,
+      meta: response.data.meta
+    });
+
+  } catch (error) {
+    console.error('Error fetching all phone numbers:', error.response?.data || error.message);
+    res.status(500).json({
+      error: 'Failed to fetch phone numbers',
+      details: error.response?.data || error.message
+    });
+  }
+});
+
+// Assign phone number to user (add tag)
+router.post('/assign-number', authenticateUser, async (req, res) => {
+  try {
+    const axios = require('axios');
+    const { phoneNumberId, sipUsername, phoneNumber } = req.body;
+
+    if (!phoneNumberId || !sipUsername) {
+      return res.status(400).json({
+        error: 'phoneNumberId and sipUsername are required'
+      });
+    }
+
+    console.log(`Assigning phone number ${phoneNumber} (ID: ${phoneNumberId}) to user ${sipUsername}`);
+
+    // Update the phone number with the SIP username as a tag
+    const response = await axios.patch(
+      `https://api.telnyx.com/v2/phone_numbers/${phoneNumberId}`,
+      {
+        tags: [sipUsername]
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.TELNYX_API}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    console.log('✅ Phone number assigned successfully');
+
+    res.json({
+      message: 'Phone number assigned successfully',
+      data: {
+        phone_number: response.data.data.phone_number,
+        tags: response.data.data.tags,
+        sipUsername: sipUsername
+      }
+    });
+
+  } catch (error) {
+    console.error('Error assigning phone number:', error.response?.data || error.message);
+    res.status(500).json({
+      error: 'Failed to assign phone number',
+      details: error.response?.data || error.message
+    });
+  }
+});
+
+// Unassign phone number from user (remove tag)
+router.post('/unassign-number', authenticateUser, async (req, res) => {
+  try {
+    const axios = require('axios');
+    const { phoneNumberId, phoneNumber } = req.body;
+
+    if (!phoneNumberId) {
+      return res.status(400).json({
+        error: 'phoneNumberId is required'
+      });
+    }
+
+    console.log(`Unassigning phone number ${phoneNumber} (ID: ${phoneNumberId})`);
+
+    // Remove all tags from the phone number
+    const response = await axios.patch(
+      `https://api.telnyx.com/v2/phone_numbers/${phoneNumberId}`,
+      {
+        tags: []
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.TELNYX_API}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    console.log('✅ Phone number unassigned successfully');
+
+    res.json({
+      message: 'Phone number unassigned successfully',
+      data: {
+        phone_number: response.data.data.phone_number,
+        tags: response.data.data.tags
+      }
+    });
+
+  } catch (error) {
+    console.error('Error unassigning phone number:', error.response?.data || error.message);
+    res.status(500).json({
+      error: 'Failed to unassign phone number',
+      details: error.response?.data || error.message
+    });
+  }
+});
+
+// Get available (unassigned) phone numbers
+router.get('/available-phone-numbers', authenticateUser, async (req, res) => {
+  try {
+    const axios = require('axios');
+    const { page = 1, size = 100 } = req.query;
+
+    console.log('Fetching available (unassigned) phone numbers');
+
+    const response = await axios.get('https://api.telnyx.com/v2/phone_numbers', {
+      headers: {
+        'Authorization': `Bearer ${process.env.TELNYX_API}`,
+        'Content-Type': 'application/json'
+      },
+      params: {
+        'page[number]': page,
+        'page[size]': size
+      }
+    });
+
+    // Filter out numbers that don't have tags (unassigned)
+    const availableNumbers = response.data.data
+      .filter(number => !number.tags || number.tags.length === 0)
+      .map(number => ({
+        id: number.id,
+        phone_number: number.phone_number,
+        status: number.status,
+        connection_name: number.connection_name
+      }));
+
+    res.json({
+      data: availableNumbers,
+      count: availableNumbers.length
+    });
+
+  } catch (error) {
+    console.error('Error fetching available phone numbers:', error.response?.data || error.message);
+    res.status(500).json({
+      error: 'Failed to fetch available phone numbers',
+      details: error.response?.data || error.message
+    });
   }
 });
 

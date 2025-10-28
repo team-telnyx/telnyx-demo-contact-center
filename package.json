@@ -2,9 +2,11 @@
     "name": "contact-center-v2-demo",
     "version": "1.0.0",
     "scripts": {
-        "client": "cd client && npm start",
+        "client": "cd client && npm run dev",
         "server": "cd server && npm start",
-        "start": "concurrently \"npm run server\" \"npm run client\""
+        "server:dev": "cd server && npm start",
+        "dev": "concurrently \"npm run server:dev\" \"npm run client\"",
+        "start": "concurrently \"npm run server:dev\" \"npm run client\""
     },
     "devDependencies": {
         "concurrently": "^6.5.1"

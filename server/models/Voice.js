@@ -46,6 +46,11 @@ Voice.init({
     type: DataTypes.STRING,
     allowNull: true
   },
+  status: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: 'queued'
+  },
   transfer_status: {
     type: DataTypes.ENUM('warm_initiated', 'warm_connected', 'completed'),
     allowNull: true
