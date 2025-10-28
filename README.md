@@ -3,7 +3,7 @@
 <img src="telnyx_logo.png"
      alt="Telnyx Logo"
      style="float: center; margin-right: 10px;" />
-<br>WEBRTC CONTACT CENTER V2</h1>
+<br>WEBRTC CONTACT CENTER</h1>
 <h3>Developed with the software and tools below.</h3>
 
 <p align="center">
