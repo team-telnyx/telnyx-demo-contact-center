@@ -14,7 +14,7 @@ import {
   subscribe as storeSubscribe,
   getState as storeGetState,
 } from '@/lib/call-store';
-import { validatePhoneNumber, buildPhoneNumber, COUNTRY_CODES } from '@/utils/phoneValidation';
+import { validatePhoneNumberWithCountry, buildPhoneNumber, COUNTRY_CODES } from '@/utils/phoneValidation';
 import CountryCodeSelector from './CountryCodeSelector';
 import {
   Phone as IconPhone,
@@ -274,8 +274,8 @@ export function Softphone() {
       to = buildPhoneNumber(countryCode, to);
     }
 
-    // Validate phone number before making the call
-    const error = validatePhoneNumber(to);
+    // Validate phone number with country-specific rules
+    const error = validatePhoneNumberWithCountry(toNumber, countryCode);
     if (error) {
       setValidationError(error);
       setErrorMessage(error);
@@ -666,8 +666,8 @@ export function Softphone() {
         top: '100px',
         left: '50%',
         transform: 'translateX(-50%)',
-        zIndex: 1300, // MUI Dialog default is 1300, setting to same level allows it to coexist
-        pointerEvents: 'auto',
+        zIndex: 1400, // Higher than MUI Dialog (1300) to float above other modals
+        pointerEvents: 'none', // Allow clicks to pass through empty space
       }}
     >
       <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: 'none' }} />
@@ -675,7 +675,7 @@ export function Softphone() {
         <Box
           ref={nodeRef}
           sx={{
-            pointerEvents: 'auto',
+            pointerEvents: 'auto', // But enable clicks on the softphone itself
             position: 'relative',
             zIndex: 1,
           }}

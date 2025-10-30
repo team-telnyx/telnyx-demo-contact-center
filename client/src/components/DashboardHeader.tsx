@@ -167,7 +167,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onToggleSidebar, isOp
             gap: { xs: 1, sm: 2 },
           }}
         >
-          {/* Status Chip */}
+          {/* WebRTC Connection Status Chip */}
           <Chip
             icon={statusChip.icon}
             label={statusChip.label}

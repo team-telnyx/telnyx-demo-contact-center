@@ -269,16 +269,6 @@ const PhonePage: React.FC<PhonePageProps> = ({ isOpen }) => {
     }
   };
 
-  if (!isLoggedIn) {
-    return (
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '50vh' }}>
-        <Typography variant="h5" color="text.secondary">
-          Please login to access this page.
-        </Typography>
-      </Box>
-    );
-  }
-
   return (
     <Box>
       {/* Success/Error Alerts */}

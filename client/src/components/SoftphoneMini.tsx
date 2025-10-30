@@ -24,7 +24,7 @@ import {
 import { Box, IconButton, TextField, Tooltip } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import { usePhoneUi } from '@/contexts/PhoneUiProvider';
-import { isValidDialTo, validatePhoneNumber, buildPhoneNumber } from '@/utils/phoneValidation';
+import { isValidDialTo, validatePhoneNumberWithCountry, buildPhoneNumber } from '@/utils/phoneValidation';
 import CountryCodeSelector from './CountryCodeSelector';
 
 const SoftphoneMini: React.FC = () => {
@@ -62,8 +62,8 @@ const SoftphoneMini: React.FC = () => {
       to = buildPhoneNumber(countryCode, to);
     }
 
-    // Validate phone number before making the call
-    const error = validatePhoneNumber(to);
+    // Validate phone number with country-specific rules
+    const error = validatePhoneNumberWithCountry(state.toNumber || '', countryCode);
     if (error) {
       setValidationError(error);
       return;

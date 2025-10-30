@@ -42,29 +42,52 @@ const Dashboard: React.FC<DashboardProps> = ({ children }) => {
 
     // Add global error handler to suppress Telnyx SDK performance metrics errors
     const handleError = (event: ErrorEvent) => {
-      if (event.message && event.message.includes("The mark 'peer-creation-start' does not exist")) {
-        console.warn('Suppressed Telnyx SDK performance metrics error:', event.message);
+      const message = event.message || event.error?.message || '';
+      if (message.includes("The mark 'peer-creation-start' does not exist") ||
+          message.includes("does not exist") ||
+          message.includes("measure") ||
+          message.includes("Performance")) {
+        console.warn('Suppressed Telnyx SDK performance metrics error');
         event.preventDefault();
+        event.stopPropagation();
         return true;
       }
     };
 
     const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
       const error = event.reason?.message || event.reason;
-      if (typeof error === 'string' && error.includes("The mark 'peer-creation-start' does not exist")) {
-        console.warn('Suppressed Telnyx SDK performance metrics promise rejection:', error);
+      if (typeof error === 'string' && (
+        error.includes("The mark 'peer-creation-start' does not exist") ||
+        error.includes("does not exist") ||
+        error.includes("measure") ||
+        error.includes("Performance")
+      )) {
+        console.warn('Suppressed Telnyx SDK performance metrics promise rejection');
         event.preventDefault();
         return;
       }
     };
 
-    window.addEventListener('error', handleError);
+    // Override console.error to suppress performance metrics errors
+    const originalConsoleError = console.error;
+    console.error = (...args: any[]) => {
+      const message = args.join(' ');
+      if (message.includes("The mark 'peer-creation-start' does not exist") ||
+          message.includes("Failed to execute 'measure' on 'Performance'")) {
+        // Silently ignore these errors
+        return;
+      }
+      originalConsoleError.apply(console, args);
+    };
+
+    window.addEventListener('error', handleError, true);
     window.addEventListener('unhandledrejection', handleUnhandledRejection);
 
     return () => {
-      // Restore original window.open
+      // Restore original window.open and console.error
       window.open = originalWindowOpen;
-      window.removeEventListener('error', handleError);
+      console.error = originalConsoleError;
+      window.removeEventListener('error', handleError, true);
       window.removeEventListener('unhandledrejection', handleUnhandledRejection);
     };
   }, []);

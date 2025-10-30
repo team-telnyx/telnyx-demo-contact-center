@@ -10,6 +10,7 @@ const { broadcast, broadcastToAgentPrimary, getConnectedAgents } = require('./we
 const callEventEmitter = require('../utils/eventEmitter');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const { getHoldMusicBase64 } = require('../utils/audioUtils');
 
 // Track active calls in memory
 const activeCalls = new Map();
@@ -266,6 +267,39 @@ router.post('/webhook', express.json(), async (req, res) => {
           timestamp: new Date()
         });
 
+        // Immediately start hold music playback after enqueuing
+        console.log('🎵 Starting hold music playback immediately...');
+        try {
+          // Get base64 encoded hold music
+          const base64Audio = getHoldMusicBase64();
+
+          if (!base64Audio) {
+            console.error('❌ Failed to load hold music - skipping playback');
+          } else {
+            console.log('📊 Base64 MP3 size:', Math.round(base64Audio.length / 1024), 'KB');
+
+            await axios.post(
+              `https://api.telnyx.com/v2/calls/${data.payload.call_control_id}/actions/playback_start`,
+              {
+                playback_content: base64Audio,
+                audio_type: 'mp3',
+                loop: 'infinity'
+              },
+              {
+                headers: {
+                  'Authorization': `Bearer ${process.env.TELNYX_API}`,
+                  'Content-Type': 'application/json'
+                }
+              }
+            );
+            console.log('✅ Hold music started immediately after enqueue (base64 MP3, looping infinitely)');
+          }
+        } catch (playbackError) {
+          console.error('❌ Error starting immediate hold music:', playbackError.message);
+          console.error('❌ Error response:', playbackError.response?.data);
+          // Don't fail the enqueue if playback fails
+        }
+
       } catch (error) {
         console.error('❌ Error during call enqueue process:', error.message);
         console.error('❌ Error type:', error.type);
@@ -319,49 +353,31 @@ router.post('/webhook', express.json(), async (req, res) => {
       console.error('❌ DB error updating status to queued:', e);
     }
 
-    // Start hold music
+    // Note: Hold music playback is now started immediately after enqueuing (in call.answered handler)
+    // This event handler just confirms the enqueue was successful
+    console.log('🎵 Hold music should already be playing (started immediately after enqueue)');
+
+    // Verify playback is active (optional)
     if (telnyxClient) {
       try {
-        // Verify call is still active before starting hold music
-        console.log('🎵 Verifying call is still active before starting hold music...');
+        console.log('🎵 Verifying call is still active...');
         const callStatus = await telnyxClient.calls.retrieve(data.payload.call_control_id);
 
         const isAliveForMusic = callStatus.data?.is_alive || callStatus.is_alive;
         if (!isAliveForMusic) {
-          console.error('❌ Call ended before hold music could start');
+          console.error('❌ Call ended before enqueued event processed');
           return;
         }
 
-        // Add a small delay to ensure call is stable
-        await new Promise(resolve => setTimeout(resolve, 1000));
-
-        // Start hold music directly with Twilio audio URL
-        console.log('🎵 Starting hold music...');
-        try {
-          const playbackResponse = await axios.post(
-            `https://api.telnyx.com/v2/calls/${data.payload.call_control_id}/actions/playback_start`,
-            {
-              audio_url: 'http://com.twilio.music.classical.s3.amazonaws.com/MARKOVICHAMP-Borghestral.mp3'
-            },
-            {
-              headers: {
-                'Authorization': `Bearer ${process.env.TELNYX_API}`,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
-          console.log('✅ Queue hold music started successfully:', playbackResponse.data);
-        } catch (audioError) {
-          console.error('❌ Hold music failed:', audioError.response?.data || audioError.message);
-        }
+        console.log('✅ Call is still active, playback should be ongoing');
 
       } catch (playbackError) {
-        console.error('❌ Error starting queue hold music:', playbackError.message);
-        console.error('❌ Hold music error status:', playbackError.response?.status);
-        console.error('❌ Hold music error data:', JSON.stringify(playbackError.response?.data, null, 2));
+        console.error('❌ Error verifying queue call status:', playbackError.message);
+        console.error('❌ Error status:', playbackError.response?.status);
+        console.error('❌ Error data:', JSON.stringify(playbackError.response?.data, null, 2));
 
         if (playbackError.response?.status === 422) {
-          console.log('⚠️ 422 Error - Invalid request parameters for playback_start');
+          console.log('⚠️ 422 Error - Invalid request parameters');
         } else if (playbackError.response?.data?.errors?.[0]?.code === '90018') {
           console.log('⚠️ Call already ended before hold music could start - customer hung up');
         } else {

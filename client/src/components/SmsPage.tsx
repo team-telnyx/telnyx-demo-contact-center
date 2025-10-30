@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { useAuth } from '@/contexts/AuthContext';
 import { useDataCache } from '@/contexts/DataCacheContext';
@@ -31,6 +31,9 @@ import {
 } from '@mui/material';
 import { useUnreadCount } from '@/hooks/useUnreadCount';
 import { useServerSentEvents } from '@/hooks/useServerSentEvents';
+import Draggable from 'react-draggable';
+import CountryCodeSelector from './CountryCodeSelector';
+import { validatePhoneNumberWithCountry, buildPhoneNumber } from '@/utils/phoneValidation';
 
 // TypeScript interfaces
 interface Conversation {
@@ -97,6 +100,20 @@ const getAgentsWithTag = async (tag: string): Promise<string[]> => {
   }
 };
 
+// Draggable Paper component for Dialog
+function DraggablePaperComponent(props: any) {
+  const nodeRef = useRef(null);
+  return (
+    <Draggable
+      nodeRef={nodeRef}
+      handle=".draggable-dialog-title"
+      cancel={'[class*="MuiDialogContent-root"]'}
+    >
+      <Paper ref={nodeRef} {...props} />
+    </Draggable>
+  );
+}
+
 const SmsPage: React.FC<SmsPageProps> = ({ isOpen }) => {
   const { isLoggedIn, username } = useAuth();
   const [conversationMessages, setConversationMessages] = useState<Message[]>([]);
@@ -108,6 +125,8 @@ const SmsPage: React.FC<SmsPageProps> = ({ isOpen }) => {
   const [isComposeDialogOpen, setIsComposeDialogOpen] = useState<boolean>(false);
   const [messageQueue, setMessageQueue] = useState<Conversation[]>([]);
   const [isSending, setIsSending] = useState<boolean>(false); // Loading state for sending messages
+  const [composeCountryCode, setComposeCountryCode] = useState<string>('+1'); // Default to US
+  const [composeValidationError, setComposeValidationError] = useState<string | null>(null);
   const { setUnreadCount, setQueueUnreadCount } = useUnreadCount();
   const { getCachedAgentNumbers } = useDataCache();
   const messagesContainerRef = React.useRef<HTMLDivElement>(null);
@@ -174,7 +193,7 @@ const SmsPage: React.FC<SmsPageProps> = ({ isOpen }) => {
 
           // Fetch assigned conversations
           const assignedRes = await axios.get(
-            `http://${apiHost}:${apiPort}/api/conversations/assignedConversations/${username}`,
+            `http://${apiHost}:${apiPort}/api/conversations/assignedTo/${username}`,
             {
               headers: {
                 'Authorization': `Bearer ${token}`,
@@ -225,12 +244,27 @@ const SmsPage: React.FC<SmsPageProps> = ({ isOpen }) => {
   const handleCloseComposeDialog = () => {
     setIsComposeDialogOpen(false);
     setNewMessage({ to: '', body: '' });
+    setComposeValidationError(null);
   };
 
   // function to handle new messages
   const handleCompose = async () => {
     if (isSending) return; // Prevent duplicate sends
 
+    // Build full phone number with country code if needed
+    let toNumber = newMessage.to.trim();
+    if (toNumber && !toNumber.startsWith('+') && !toNumber.includes('sip:')) {
+      toNumber = buildPhoneNumber(composeCountryCode, toNumber);
+    }
+
+    // Validate phone number with country-specific rules
+    const validationError = validatePhoneNumberWithCountry(newMessage.to, composeCountryCode);
+    if (validationError) {
+      setComposeValidationError(validationError);
+      return;
+    }
+
+    setComposeValidationError(null);
     setIsSending(true);
     try {
       const response = await fetch(
@@ -241,7 +275,7 @@ const SmsPage: React.FC<SmsPageProps> = ({ isOpen }) => {
           body: JSON.stringify({
             From: composeAgentNumber,
             Text: newMessage.body,
-            To: newMessage.to,
+            To: toNumber, // Use validated phone number
             agentUsername: username, // Include username for auto-assignment
           }),
         }
@@ -665,8 +699,46 @@ const SmsPage: React.FC<SmsPageProps> = ({ isOpen }) => {
           </Card>
         </Box>
       </Box>
-      <Dialog open={isComposeDialogOpen} onClose={() => !isSending && handleCloseComposeDialog()} maxWidth="sm" fullWidth>
-        <DialogTitle>Compose New Message</DialogTitle>
+      <Dialog
+        open={isComposeDialogOpen}
+        onClose={() => !isSending && handleCloseComposeDialog()}
+        maxWidth="sm"
+        fullWidth
+        hideBackdrop={true} // Remove backdrop so both modals are clearly visible
+        disableScrollLock={true} // Prevent scroll locking that might interfere
+        disableEnforceFocus={true} // Allow focus on other modals
+        disableAutoFocus={false}
+        disableRestoreFocus={true}
+        PaperComponent={DraggablePaperComponent}
+        sx={{
+          zIndex: 1300, // Dialog at standard modal level, below Softphone (1400)
+          pointerEvents: 'none', // Allow clicks to pass through the entire Dialog root
+          '& .MuiDialog-container': {
+            alignItems: 'flex-start',
+            paddingTop: '15vh', // Position lower to avoid Softphone overlap
+            pointerEvents: 'none', // Allow clicks to pass through container
+          },
+          '& .MuiDialog-paper': {
+            marginLeft: 'auto',
+            marginRight: '20px', // Position slightly to the right
+            pointerEvents: 'auto', // But enable clicks on the dialog itself
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)', // Add shadow for depth
+            m: 0, // Remove default margins
+          }
+        }}
+      >
+        <DialogTitle
+          className="draggable-dialog-title"
+          sx={{
+            cursor: 'move',
+            userSelect: 'none',
+            bgcolor: 'primary.main',
+            color: 'white',
+            fontWeight: 600,
+          }}
+        >
+          Compose New Message
+        </DialogTitle>
         <DialogContent sx={{ pt: 2 }}>
           <FormControl fullWidth margin="normal" variant="outlined" disabled={isSending}>
             <InputLabel>From Number</InputLabel>
@@ -683,18 +755,30 @@ const SmsPage: React.FC<SmsPageProps> = ({ isOpen }) => {
             </Select>
           </FormControl>
 
-          <TextField
-            autoFocus
-            margin="normal"
-            label="To"
-            type="text"
-            fullWidth
-            variant="outlined"
-            value={newMessage.to}
-            onChange={(e) => setNewMessage({ ...newMessage, to: e.target.value })}
-            placeholder="+1234567890"
-            disabled={isSending}
-          />
+          <Box sx={{ display: 'flex', gap: 1, mt: 2 }}>
+            <CountryCodeSelector
+              value={composeCountryCode}
+              onChange={setComposeCountryCode}
+              size="small"
+            />
+            <TextField
+              autoFocus
+              label="To"
+              type="text"
+              fullWidth
+              variant="outlined"
+              value={newMessage.to}
+              onChange={(e) => {
+                setNewMessage({ ...newMessage, to: e.target.value });
+                setComposeValidationError(null);
+              }}
+              placeholder="Phone number or SIP URI"
+              disabled={isSending}
+              error={!!composeValidationError}
+              helperText={composeValidationError}
+              size="small"
+            />
+          </Box>
 
           <TextField
             margin="normal"

@@ -19,13 +19,19 @@ export default function ProtectedRoute({ children }: ProtectedRouteProps) {
   const router = useRouter();
 
   useEffect(() => {
-    // Only redirect if auth is loaded and user is not logged in AND no token cookie exists
-    // This prevents redirect loops when middleware has already validated the token
-    if (!isLoading && !isLoggedIn && !hasTokenCookie()) {
-      console.log('ProtectedRoute: User not authenticated, redirecting to login');
-      // Use window.location for hard redirect
-      if (typeof window !== 'undefined') {
-        window.location.href = '/login';
+    // Redirect if auth is loaded and user is not logged in
+    if (!isLoading && !isLoggedIn) {
+      // Check for token cookie as fallback
+      const hasToken = hasTokenCookie();
+
+      if (!hasToken) {
+        console.log('ProtectedRoute: No authentication found, redirecting to login');
+        // Use window.location for hard redirect to clear any cached state
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login';
+        }
+      } else {
+        console.log('ProtectedRoute: Token cookie exists but AuthContext not loaded - waiting for auth sync');
       }
     }
   }, [isLoggedIn, isLoading]);
@@ -46,11 +52,12 @@ export default function ProtectedRoute({ children }: ProtectedRouteProps) {
     );
   }
 
-  // If no token cookie and not logged in, don't render (redirect happening)
+  // If not logged in and no token cookie, don't render (redirect happening)
   if (!isLoggedIn && !hasTokenCookie()) {
+    console.log('ProtectedRoute: Blocking render - no authentication');
     return null;
   }
 
-  // Either logged in OR token cookie exists (middleware validated), render children
+  // Render children if logged in OR token cookie exists (will sync on next render)
   return <>{children}</>;
 }

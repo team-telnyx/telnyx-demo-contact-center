@@ -26,6 +26,7 @@ import {
 } from '@mui/icons-material';
 import { useAuth } from '@/contexts/AuthContext';
 import apiService from '@/services/apiService';
+import TelnyxStatusDashboard from './TelnyxStatusDashboard';
 
 interface DashboardMetrics {
   activeCalls: number;
@@ -302,12 +303,7 @@ const MainContent: React.FC = () => {
         <Grid item xs={12} md={4}>
           <Card elevation={0} sx={{ height: '100%' }}>
             <CardHeader
-              title="System Status"
-              avatar={
-                <Avatar sx={{ bgcolor: 'success.main' }}>
-                  <ScheduleIcon />
-                </Avatar>
-              }
+              title="Telnyx System Status"
               sx={{
                 '& .MuiCardHeader-title': {
                   fontWeight: 600,
@@ -316,23 +312,7 @@ const MainContent: React.FC = () => {
               }}
             />
             <CardContent>
-              <Box
-                sx={{
-                  p: 2,
-                  borderRadius: 2,
-                  bgcolor: 'success.light',
-                  color: 'success.dark',
-                  mb: 2,
-                  textAlign: 'center',
-                }}
-              >
-                <Typography variant="body1" sx={{ fontWeight: 600 }}>
-                  All systems operational
-                </Typography>
-              </Box>
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 2 }}>
-                Telnyx Contact Center - Next.js with Material-UI
-              </Typography>
+              <TelnyxStatusDashboard />
             </CardContent>
           </Card>
         </Grid>
