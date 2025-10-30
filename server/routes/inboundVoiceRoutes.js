@@ -47,9 +47,10 @@ initializeTelnyxClient();
  * @param {string} from - Caller number
  * @param {string} to - Called number
  * @param {boolean} enableCallback - Whether to enable queue callback
+ * @param {string} direction - Call direction (default: 'incoming')
  */
-async function enqueueCall(callControlId, from, to, enableCallback = false) {
-  console.log('📞 Enqueuing call:', { callControlId, from, to, enableCallback });
+async function enqueueCall(callControlId, from, to, enableCallback = false, direction = 'incoming') {
+  console.log('📞 Enqueuing call:', { callControlId, from, to, enableCallback, direction });
 
   // Prepare enqueue request
   const enqueuePayload = {
@@ -94,6 +95,18 @@ async function enqueueCall(callControlId, from, to, enableCallback = false) {
     status: 'enqueued',
     timestamp: new Date(),
     callback_enabled: enableCallback
+  });
+
+  // NOW emit NEW_CALL event - call will appear in dashboard
+  console.log('📡 Emitting NEW_CALL event to dashboard');
+  callEventEmitter.emitNewCall({
+    id: callControlId,
+    call_control_id: callControlId,
+    from: from,
+    to: to,
+    direction: direction,
+    status: 'enqueued',
+    created_at: new Date()
   });
 
   // Start hold music playback
@@ -165,16 +178,9 @@ router.post('/webhook', express.json(), async (req, res) => {
     }).then(() => {
       console.log('Call saved to database');
 
-      // Emit NEW_CALL event for SSE
-      callEventEmitter.emitNewCall({
-        id: data.payload.call_control_id,
-        call_control_id: data.payload.call_control_id,
-        from: data.payload.from,
-        to: data.payload.to,
-        direction: data.payload.direction,
-        status: 'initiated',
-        created_at: new Date()
-      });
+      // DO NOT emit NEW_CALL here - wait until after gather selection
+      // The call will be emitted to dashboard only after caller chooses option (1 or 2)
+      console.log('⏸️ Call initiated but not yet shown in queue - waiting for gather selection');
     }).catch(error => {
       console.error('Error saving call to database:', error);
     });
@@ -361,6 +367,7 @@ router.post('/webhook', express.json(), async (req, res) => {
               call_control_id: data.payload.call_control_id,
               from: data.payload.from,
               to: data.payload.to,
+              direction: 'incoming', // Store direction for gather.ended webhook
               timestamp: new Date().toISOString()
             })).toString('base64')
           };
@@ -379,7 +386,7 @@ router.post('/webhook', express.json(), async (req, res) => {
         } else {
           // If callback feature is disabled, enqueue directly without gather
           console.log('📞 Callback disabled - enqueuing call directly...');
-          await enqueueCall(data.payload.call_control_id, data.payload.from, data.payload.to, false);
+          await enqueueCall(data.payload.call_control_id, data.payload.from, data.payload.to, false, 'incoming');
         }
 
       } catch (error) {
@@ -985,11 +992,12 @@ router.post('/outbound-queue', express.json(), async (req, res) => {
 
       const from = clientState.from || data.payload.from;
       const to = clientState.to || data.payload.to;
+      const direction = clientState.direction || 'incoming';
 
       if (digits === '1') {
         // Caller chose to stay on hold (no callback)
         console.log('📞 Caller pressed 1 - staying on hold without callback');
-        await enqueueCall(callControlId, from, to, false);
+        await enqueueCall(callControlId, from, to, false, direction);
       } else if (digits === '2') {
         // Caller chose callback option
         console.log('🔔 Caller pressed 2 - enabling callback');
@@ -1014,7 +1022,7 @@ router.post('/outbound-queue', express.json(), async (req, res) => {
         await new Promise(resolve => setTimeout(resolve, 3000));
 
         // Enqueue with callback enabled
-        await enqueueCall(callControlId, from, to, true);
+        await enqueueCall(callControlId, from, to, true, direction);
 
         // Hangup the current call since they'll receive a callback
         await axios.post(
@@ -1031,10 +1039,10 @@ router.post('/outbound-queue', express.json(), async (req, res) => {
       } else if (data.payload.status === 'no_input' || data.payload.status === 'invalid') {
         // No input or invalid input - default to staying on hold
         console.log('⚠️ No valid input received - defaulting to hold without callback');
-        await enqueueCall(callControlId, from, to, false);
+        await enqueueCall(callControlId, from, to, false, direction);
       } else {
         console.log('⚠️ Unexpected digits received:', digits, '- defaulting to hold without callback');
-        await enqueueCall(callControlId, from, to, false);
+        await enqueueCall(callControlId, from, to, false, direction);
       }
 
       res.status(200).send('OK');
@@ -1044,7 +1052,8 @@ router.post('/outbound-queue', express.json(), async (req, res) => {
 
       // On error, try to enqueue without callback as fallback
       try {
-        await enqueueCall(callControlId, data.payload.from, data.payload.to, false);
+        const fallbackDirection = clientState?.direction || 'incoming';
+        await enqueueCall(callControlId, data.payload.from, data.payload.to, false, fallbackDirection);
       } catch (enqueueError) {
         console.error('❌ Failed to enqueue call as fallback:', enqueueError.message);
       }
