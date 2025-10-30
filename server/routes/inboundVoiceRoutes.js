@@ -245,13 +245,39 @@ router.post('/webhook', express.json(), async (req, res) => {
         console.log('📞 Adding 500ms delay before enqueue to ensure call stability...');
         await new Promise(resolve => setTimeout(resolve, 500));
 
-        // Now attempt to enqueue
+        // Now attempt to enqueue with callback options
+        const callbackEnabled = process.env.QUEUE_CALLBACK_ENABLED === 'true';
         console.log('📞 Attempting to enqueue call...');
+        console.log('🔔 Queue callback enabled:', callbackEnabled);
+
+        // Prepare enqueue request with queue callback options (if enabled)
+        const enqueuePayload = {
+          queue_name: 'General_Queue',
+          // Client state to track call information
+          client_state: Buffer.from(JSON.stringify({
+            original_call_id: data.payload.call_control_id,
+            enqueued_at: new Date().toISOString(),
+            from: data.payload.from,
+            to: data.payload.to
+          })).toString('base64')
+        };
+
+        // Add queue callback configuration if enabled
+        if (callbackEnabled) {
+          const callbackPort = process.env.APP_PORT === '443' ? '' : `:${process.env.APP_PORT}`;
+          enqueuePayload.queue_callback_url = `https://${process.env.APP_HOST}${callbackPort}/api/voice/queue-callback`;
+          enqueuePayload.callback_timeout_secs = parseInt(process.env.QUEUE_CALLBACK_TIMEOUT_SECS || '300');
+          enqueuePayload.max_wait_time_secs = parseInt(process.env.QUEUE_MAX_WAIT_TIME_SECS || '600');
+
+          console.log('🔔 Queue callback configuration:');
+          console.log('   - Callback URL:', enqueuePayload.queue_callback_url);
+          console.log('   - Callback timeout:', enqueuePayload.callback_timeout_secs, 'seconds');
+          console.log('   - Max wait time:', enqueuePayload.max_wait_time_secs, 'seconds');
+        }
+
         const enqueueResponse = await axios.post(
           `https://api.telnyx.com/v2/calls/${data.payload.call_control_id}/actions/enqueue`,
-          {
-            queue_name: 'General_Queue'
-          },
+          enqueuePayload,
           {
             headers: {
               'Authorization': `Bearer ${process.env.TELNYX_API}`,
@@ -259,7 +285,12 @@ router.post('/webhook', express.json(), async (req, res) => {
             }
           }
         );
-        console.log('✅ Call successfully enqueued');
+
+        if (callbackEnabled) {
+          console.log('✅ Call successfully enqueued with callback support');
+        } else {
+          console.log('✅ Call successfully enqueued (callback disabled)');
+        }
 
         // Update status to enqueued
         activeCalls.set(data.payload.call_control_id, {
@@ -886,6 +917,152 @@ router.post('/outbound-queue', express.json(), async (req, res) => {
     res.status(200).send('OK');
   } else {
     res.status(200).send('OK');
+  }
+});
+
+//=================================================== QUEUE CALLBACK WEBHOOK ===================================================
+// Webhook handler for queue callback requests
+// This endpoint is called when Telnyx initiates a callback for a queued call
+router.post('/queue-callback', express.json(), async (req, res) => {
+  console.log('=== QUEUE CALLBACK WEBHOOK ===');
+  console.log('Full callback body:', JSON.stringify(req.body, null, 2));
+
+  const data = req.body.data;
+  const event_type = data?.event_type;
+  const payload = data?.payload;
+
+  console.log('Callback event type:', event_type);
+  console.log('Callback payload:', JSON.stringify(payload, null, 2));
+
+  try {
+    // Decode client state to get original call information
+    let clientState = {};
+    if (payload?.client_state) {
+      try {
+        clientState = JSON.parse(Buffer.from(payload.client_state, 'base64').toString());
+        console.log('Decoded client state:', clientState);
+      } catch (e) {
+        console.error('Error decoding client state:', e);
+      }
+    }
+
+    // Handle different callback events
+    if (event_type === 'call.initiated') {
+      console.log('📞 Queue callback call initiated');
+      console.log('Original call:', clientState.original_call_id);
+      console.log('Callback to:', clientState.from);
+
+      // Answer the callback call
+      await axios.post(
+        `https://api.telnyx.com/v2/calls/${payload.call_control_id}/actions/answer`,
+        {},
+        {
+          headers: {
+            'Authorization': `Bearer ${process.env.TELNYX_API}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+      console.log('✅ Callback call answered');
+
+      // Track callback in Voice table
+      await Voice.create({
+        queue_uuid: payload.call_control_id,
+        telnyx_number: payload.to,
+        destination_number: payload.from,
+        direction: 'callback',
+        queue_name: 'General_Queue'
+      });
+
+    } else if (event_type === 'call.answered') {
+      console.log('📞 Queue callback call answered by customer');
+
+      // Create CallSession and CallLeg for callback
+      const sessionKey = payload.call_control_id;
+      await CallSession.findOrCreate({
+        where: { sessionKey },
+        defaults: {
+          status: 'queued',
+          from_number: payload.from,
+          to_number: payload.to,
+          direction: 'callback',
+          started_at: new Date(),
+        },
+      });
+
+      await CallLeg.findOrCreate({
+        where: { call_control_id: sessionKey },
+        defaults: {
+          sessionKey,
+          leg_type: 'customer',
+          direction: 'callback',
+          status: 'ringing',
+          start_time: new Date(),
+        },
+      });
+
+      // Now enqueue the callback call so agent can accept it
+      await axios.post(
+        `https://api.telnyx.com/v2/calls/${payload.call_control_id}/actions/enqueue`,
+        {
+          queue_name: 'General_Queue'
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${process.env.TELNYX_API}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+      console.log('✅ Callback call enqueued for agent');
+
+      // Emit NEW_CALL event for callback
+      callEventEmitter.emitNewCall({
+        id: payload.call_control_id,
+        call_control_id: payload.call_control_id,
+        from: payload.from,
+        to: payload.to,
+        direction: 'callback',
+        status: 'queued',
+        created_at: new Date()
+      });
+
+    } else if (event_type === 'call.hangup') {
+      console.log('📞 Queue callback call hung up');
+      console.log('Hangup cause:', payload.hangup_cause);
+
+      // Update database
+      await Voice.update({
+        status: 'completed',
+        end_time: new Date()
+      }, {
+        where: { queue_uuid: payload.call_control_id }
+      });
+
+      // Clean up session
+      await CallSession.update({
+        status: 'ended',
+        ended_at: new Date()
+      }, {
+        where: { sessionKey: payload.call_control_id }
+      });
+
+      await CallLeg.update({
+        status: 'ended',
+        end_time: new Date(),
+        hangup_cause: payload.hangup_cause,
+        hangup_source: payload.hangup_source
+      }, {
+        where: { call_control_id: payload.call_control_id }
+      });
+    }
+
+    res.status(200).send('OK');
+
+  } catch (error) {
+    console.error('❌ Error handling queue callback:', error);
+    console.error('Error details:', error.response?.data || error.message);
+    res.status(500).send('Internal Server Error');
   }
 });
 
