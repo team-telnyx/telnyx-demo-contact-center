@@ -972,13 +972,16 @@ router.post('/outbound-queue', express.json(), async (req, res) => {
   } else if (event_type === 'call.gather.ended') {
     // Handle gather ended event for callback option selection
     console.log('=== GATHER ENDED ===');
+    console.log('Full gather.ended payload:', JSON.stringify(data.payload, null, 2));
     console.log('Digits collected:', data.payload.digits);
     console.log('Status:', data.payload.status);
 
     const digits = data.payload.digits;
     const callControlId = data.payload.call_control_id;
 
-    try {
+    // Process the gather result asynchronously
+    (async () => {
+      try {
       // Decode client state
       let clientState = {};
       if (data.payload.client_state) {
@@ -1045,21 +1048,22 @@ router.post('/outbound-queue', express.json(), async (req, res) => {
         await enqueueCall(callControlId, from, to, false, direction);
       }
 
-      res.status(200).send('OK');
-    } catch (error) {
-      console.error('❌ Error handling gather ended:', error);
-      console.error('Error details:', error.response?.data || error.message);
+      } catch (error) {
+        console.error('❌ Error handling gather ended:', error);
+        console.error('Error details:', error.response?.data || error.message);
 
-      // On error, try to enqueue without callback as fallback
-      try {
-        const fallbackDirection = clientState?.direction || 'incoming';
-        await enqueueCall(callControlId, data.payload.from, data.payload.to, false, fallbackDirection);
-      } catch (enqueueError) {
-        console.error('❌ Failed to enqueue call as fallback:', enqueueError.message);
+        // On error, try to enqueue without callback as fallback
+        try {
+          const fallbackDirection = clientState?.direction || 'incoming';
+          await enqueueCall(callControlId, data.payload.from, data.payload.to, false, fallbackDirection);
+        } catch (enqueueError) {
+          console.error('❌ Failed to enqueue call as fallback:', enqueueError.message);
+        }
       }
+    })(); // End async function
 
-      res.status(200).send('OK');
-    }
+    // Send response immediately to Telnyx
+    res.status(200).send('OK');
   } else if (event_type === 'call.hangup' && hangup_source === 'callee') {
     console.log('*** AGENT HANGUP DETECTED (before bridge) ***');
     console.log('Agent hung up before accepting call');
