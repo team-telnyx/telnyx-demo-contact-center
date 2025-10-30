@@ -40,6 +40,95 @@ const initializeTelnyxClient = () => {
 // Try to initialize immediately
 initializeTelnyxClient();
 
+//================================================ HELPER FUNCTIONS ================================================
+/**
+ * Helper function to enqueue a call with optional callback support
+ * @param {string} callControlId - The call control ID
+ * @param {string} from - Caller number
+ * @param {string} to - Called number
+ * @param {boolean} enableCallback - Whether to enable queue callback
+ */
+async function enqueueCall(callControlId, from, to, enableCallback = false) {
+  console.log('📞 Enqueuing call:', { callControlId, from, to, enableCallback });
+
+  // Prepare enqueue request
+  const enqueuePayload = {
+    queue_name: 'General_Queue',
+    client_state: Buffer.from(JSON.stringify({
+      original_call_id: callControlId,
+      enqueued_at: new Date().toISOString(),
+      from: from,
+      to: to
+    })).toString('base64')
+  };
+
+  // Add queue callback configuration if enabled
+  if (enableCallback) {
+    const callbackPort = process.env.APP_PORT === '443' ? '' : `:${process.env.APP_PORT}`;
+    enqueuePayload.queue_callback_url = `https://${process.env.APP_HOST}${callbackPort}/api/voice/queue-callback`;
+    enqueuePayload.callback_timeout_secs = parseInt(process.env.QUEUE_CALLBACK_TIMEOUT_SECS || '300');
+    enqueuePayload.max_wait_time_secs = parseInt(process.env.QUEUE_MAX_WAIT_TIME_SECS || '600');
+
+    console.log('🔔 Queue callback enabled:');
+    console.log('   - Callback URL:', enqueuePayload.queue_callback_url);
+    console.log('   - Callback timeout:', enqueuePayload.callback_timeout_secs, 'seconds');
+    console.log('   - Max wait time:', enqueuePayload.max_wait_time_secs, 'seconds');
+  }
+
+  // Enqueue the call
+  await axios.post(
+    `https://api.telnyx.com/v2/calls/${callControlId}/actions/enqueue`,
+    enqueuePayload,
+    {
+      headers: {
+        'Authorization': `Bearer ${process.env.TELNYX_API}`,
+        'Content-Type': 'application/json'
+      }
+    }
+  );
+
+  console.log('✅ Call successfully enqueued', enableCallback ? 'with callback support' : '');
+
+  // Update call state
+  activeCalls.set(callControlId, {
+    status: 'enqueued',
+    timestamp: new Date(),
+    callback_enabled: enableCallback
+  });
+
+  // Start hold music playback
+  console.log('🎵 Starting hold music playback...');
+  try {
+    const base64Audio = getHoldMusicBase64();
+
+    if (!base64Audio) {
+      console.error('❌ Failed to load hold music - skipping playback');
+    } else {
+      console.log('📊 Base64 MP3 size:', Math.round(base64Audio.length / 1024), 'KB');
+
+      await axios.post(
+        `https://api.telnyx.com/v2/calls/${callControlId}/actions/playback_start`,
+        {
+          playback_content: base64Audio,
+          audio_type: 'mp3',
+          loop: 'infinity'
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${process.env.TELNYX_API}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+      console.log('✅ Hold music started (base64 MP3, looping infinitely)');
+    }
+  } catch (playbackError) {
+    console.error('❌ Error starting hold music:', playbackError.message);
+    console.error('❌ Error response:', playbackError.response?.data);
+    // Don't fail the enqueue if playback fails
+  }
+}
+
 //================================================ INBOUND CALL WEBHOOK ================================================
 // All inbound calls are delivered here initially
 router.post('/webhook', express.json(), async (req, res) => {
@@ -242,93 +331,55 @@ router.post('/webhook', express.json(), async (req, res) => {
         }
 
         // Add a small delay to ensure call is fully established
-        console.log('📞 Adding 500ms delay before enqueue to ensure call stability...');
+        console.log('📞 Adding 500ms delay before gather prompt...');
         await new Promise(resolve => setTimeout(resolve, 500));
 
-        // Now attempt to enqueue with callback options
+        // Check if queue callback feature is enabled
         const callbackEnabled = process.env.QUEUE_CALLBACK_ENABLED === 'true';
-        console.log('📞 Attempting to enqueue call...');
-        console.log('🔔 Queue callback enabled:', callbackEnabled);
+        console.log('🔔 Queue callback feature enabled:', callbackEnabled);
 
-        // Prepare enqueue request with queue callback options (if enabled)
-        const enqueuePayload = {
-          queue_name: 'General_Queue',
-          // Client state to track call information
-          client_state: Buffer.from(JSON.stringify({
-            original_call_id: data.payload.call_control_id,
-            enqueued_at: new Date().toISOString(),
-            from: data.payload.from,
-            to: data.payload.to
-          })).toString('base64')
-        };
-
-        // Add queue callback configuration if enabled
-        if (callbackEnabled) {
-          const callbackPort = process.env.APP_PORT === '443' ? '' : `:${process.env.APP_PORT}`;
-          enqueuePayload.queue_callback_url = `https://${process.env.APP_HOST}${callbackPort}/api/voice/queue-callback`;
-          enqueuePayload.callback_timeout_secs = parseInt(process.env.QUEUE_CALLBACK_TIMEOUT_SECS || '300');
-          enqueuePayload.max_wait_time_secs = parseInt(process.env.QUEUE_MAX_WAIT_TIME_SECS || '600');
-
-          console.log('🔔 Queue callback configuration:');
-          console.log('   - Callback URL:', enqueuePayload.queue_callback_url);
-          console.log('   - Callback timeout:', enqueuePayload.callback_timeout_secs, 'seconds');
-          console.log('   - Max wait time:', enqueuePayload.max_wait_time_secs, 'seconds');
-        }
-
-        const enqueueResponse = await axios.post(
-          `https://api.telnyx.com/v2/calls/${data.payload.call_control_id}/actions/enqueue`,
-          enqueuePayload,
-          {
-            headers: {
-              'Authorization': `Bearer ${process.env.TELNYX_API}`,
-              'Content-Type': 'application/json'
-            }
-          }
-        );
-
-        if (callbackEnabled) {
-          console.log('✅ Call successfully enqueued with callback support');
-        } else {
-          console.log('✅ Call successfully enqueued (callback disabled)');
-        }
-
-        // Update status to enqueued
+        // Update call state to gathering
         activeCalls.set(data.payload.call_control_id, {
-          status: 'enqueued',
+          status: 'gathering',
+          direction: 'incoming',
           timestamp: new Date()
         });
 
-        // Immediately start hold music playback after enqueuing
-        console.log('🎵 Starting hold music playback immediately...');
-        try {
-          // Get base64 encoded hold music
-          const base64Audio = getHoldMusicBase64();
+        if (callbackEnabled) {
+          // Use gather with speak to offer callback option
+          console.log('🎤 Starting gather with speak to offer callback option...');
 
-          if (!base64Audio) {
-            console.error('❌ Failed to load hold music - skipping playback');
-          } else {
-            console.log('📊 Base64 MP3 size:', Math.round(base64Audio.length / 1024), 'KB');
+          const gatherPayload = {
+            payload: 'All agents are currently busy. Press 1 to stay on hold, or press 2 to receive a callback when an agent becomes available.',
+            voice: 'female',
+            language: 'en-US',
+            minimum_digits: 1,
+            maximum_digits: 1,
+            timeout_millis: 10000, // 10 seconds to make a choice
+            valid_digits: '12',
+            client_state: Buffer.from(JSON.stringify({
+              call_control_id: data.payload.call_control_id,
+              from: data.payload.from,
+              to: data.payload.to,
+              timestamp: new Date().toISOString()
+            })).toString('base64')
+          };
 
-            await axios.post(
-              `https://api.telnyx.com/v2/calls/${data.payload.call_control_id}/actions/playback_start`,
-              {
-                playback_content: base64Audio,
-                audio_type: 'mp3',
-                loop: 'infinity'
-              },
-              {
-                headers: {
-                  'Authorization': `Bearer ${process.env.TELNYX_API}`,
-                  'Content-Type': 'application/json'
-                }
+          await axios.post(
+            `https://api.telnyx.com/v2/calls/${data.payload.call_control_id}/actions/gather_using_speak`,
+            gatherPayload,
+            {
+              headers: {
+                'Authorization': `Bearer ${process.env.TELNYX_API}`,
+                'Content-Type': 'application/json'
               }
-            );
-            console.log('✅ Hold music started immediately after enqueue (base64 MP3, looping infinitely)');
-          }
-        } catch (playbackError) {
-          console.error('❌ Error starting immediate hold music:', playbackError.message);
-          console.error('❌ Error response:', playbackError.response?.data);
-          // Don't fail the enqueue if playback fails
+            }
+          );
+          console.log('✅ Gather with speak initiated successfully');
+        } else {
+          // If callback feature is disabled, enqueue directly without gather
+          console.log('📞 Callback disabled - enqueuing call directly...');
+          await enqueueCall(data.payload.call_control_id, data.payload.from, data.payload.to, false);
         }
 
       } catch (error) {
@@ -911,6 +962,95 @@ router.post('/outbound-queue', express.json(), async (req, res) => {
     }
 
     res.status(200).send('OK');
+  } else if (event_type === 'call.gather.ended') {
+    // Handle gather ended event for callback option selection
+    console.log('=== GATHER ENDED ===');
+    console.log('Digits collected:', data.payload.digits);
+    console.log('Status:', data.payload.status);
+
+    const digits = data.payload.digits;
+    const callControlId = data.payload.call_control_id;
+
+    try {
+      // Decode client state
+      let clientState = {};
+      if (data.payload.client_state) {
+        try {
+          clientState = JSON.parse(Buffer.from(data.payload.client_state, 'base64').toString());
+          console.log('Decoded client state:', clientState);
+        } catch (e) {
+          console.error('Error decoding client state:', e);
+        }
+      }
+
+      const from = clientState.from || data.payload.from;
+      const to = clientState.to || data.payload.to;
+
+      if (digits === '1') {
+        // Caller chose to stay on hold (no callback)
+        console.log('📞 Caller pressed 1 - staying on hold without callback');
+        await enqueueCall(callControlId, from, to, false);
+      } else if (digits === '2') {
+        // Caller chose callback option
+        console.log('🔔 Caller pressed 2 - enabling callback');
+
+        // Speak confirmation message
+        await axios.post(
+          `https://api.telnyx.com/v2/calls/${callControlId}/actions/speak`,
+          {
+            payload: 'Thank you. We will call you back when an agent becomes available. Goodbye.',
+            voice: 'female',
+            language: 'en-US'
+          },
+          {
+            headers: {
+              'Authorization': `Bearer ${process.env.TELNYX_API}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+
+        // Wait a moment for the message to play
+        await new Promise(resolve => setTimeout(resolve, 3000));
+
+        // Enqueue with callback enabled
+        await enqueueCall(callControlId, from, to, true);
+
+        // Hangup the current call since they'll receive a callback
+        await axios.post(
+          `https://api.telnyx.com/v2/calls/${callControlId}/actions/hangup`,
+          {},
+          {
+            headers: {
+              'Authorization': `Bearer ${process.env.TELNYX_API}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+        console.log('✅ Call hung up - callback will be initiated after timeout');
+      } else if (data.payload.status === 'no_input' || data.payload.status === 'invalid') {
+        // No input or invalid input - default to staying on hold
+        console.log('⚠️ No valid input received - defaulting to hold without callback');
+        await enqueueCall(callControlId, from, to, false);
+      } else {
+        console.log('⚠️ Unexpected digits received:', digits, '- defaulting to hold without callback');
+        await enqueueCall(callControlId, from, to, false);
+      }
+
+      res.status(200).send('OK');
+    } catch (error) {
+      console.error('❌ Error handling gather ended:', error);
+      console.error('Error details:', error.response?.data || error.message);
+
+      // On error, try to enqueue without callback as fallback
+      try {
+        await enqueueCall(callControlId, data.payload.from, data.payload.to, false);
+      } catch (enqueueError) {
+        console.error('❌ Failed to enqueue call as fallback:', enqueueError.message);
+      }
+
+      res.status(200).send('OK');
+    }
   } else if (event_type === 'call.hangup' && hangup_source === 'callee') {
     console.log('*** AGENT HANGUP DETECTED (before bridge) ***');
     console.log('Agent hung up before accepting call');

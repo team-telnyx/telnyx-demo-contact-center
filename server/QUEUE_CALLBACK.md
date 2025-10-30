@@ -6,13 +6,26 @@ The Queue Callback feature allows callers who are waiting in queue to receive a 
 
 ## How It Works
 
-1. **Call Enqueued**: When an inbound call is answered and no agents are immediately available, the call is placed in the queue with callback options enabled.
+1. **Call Answered**: When an inbound call is answered and no agents are immediately available, the system uses Telnyx's `gather_using_speak` to present options to the caller.
 
-2. **Callback Initiated**: Based on the configured timeout and wait time settings, Telnyx's system can initiate a callback to the customer's number.
+2. **Caller Chooses**:
+   - **Press 1**: Stay on hold with music (no callback)
+   - **Press 2**: Receive a callback when an agent is available
 
-3. **Customer Answers**: When the customer answers the callback, the call is automatically placed back into the queue.
+3. **Press 1 Flow** (Stay on Hold):
+   - Call is enqueued without callback options
+   - Hold music plays continuously
+   - Caller waits in queue for next available agent
 
-4. **Agent Accepts**: An available agent can accept the callback call from the queue, just like any other queued call.
+4. **Press 2 Flow** (Request Callback):
+   - System speaks confirmation message
+   - Call is enqueued WITH callback parameters
+   - Original call is hung up
+   - After timeout period, Telnyx initiates callback to customer's number
+   - Customer answers callback → automatically re-enqueued
+   - Agent accepts the callback call from queue
+
+5. **No Input/Invalid Input**: Defaults to stay on hold (same as Press 1)
 
 ## Configuration
 
@@ -35,34 +48,41 @@ QUEUE_MAX_WAIT_TIME_SECS=600
 
 ## Implementation Details
 
-### Enqueue Call with Callback
+### Gather Using Speak
 
-When a call is enqueued, the following parameters are sent to Telnyx:
+When no agents are available, the system prompts the caller:
 
 ```javascript
 {
-  queue_name: 'General_Queue',
-  queue_callback_url: 'https://your-domain.com/api/voice/queue-callback',
-  callback_timeout_secs: 300,
-  max_wait_time_secs: 600,
-  client_state: <base64-encoded-call-data>
+  payload: 'All agents are currently busy. Press 1 to stay on hold, or press 2 to receive a callback when an agent becomes available.',
+  voice: 'female',
+  language: 'en-US',
+  minimum_digits: 1,
+  maximum_digits: 1,
+  timeout_millis: 10000,
+  valid_digits: '12'
 }
 ```
 
-### Webhook Endpoint
+### Webhook Handlers
 
-The `/api/voice/queue-callback` endpoint handles callback events:
+**call.gather.ended** - Handles digit selection:
+- `digits: '1'` → Enqueue without callback, start hold music
+- `digits: '2'` → Speak confirmation, enqueue with callback, hangup
+- `status: 'no_input'` or `status: 'invalid'` → Default to enqueue without callback
 
+**queue-callback** - Handles callback events:
 - **call.initiated**: Callback call is initiated by Telnyx
-- **call.answered**: Customer answers the callback
+- **call.answered**: Customer answers → re-enqueue for agent
 - **call.hangup**: Callback call ends
 
 ### Call Flow
 
 ```
 1. Inbound Call → Answer → Check Agents
-2. No Agents Available → Enqueue with Callback Options
-3. Play Hold Music
+2. No Agents Available → Gather Using Speak (Press 1 or 2)
+3a. Press 1 → Enqueue → Play Hold Music → Agent Accepts
+3b. Press 2 → Confirm → Enqueue with Callback → Hangup
 4. [After timeout] → Telnyx Initiates Callback
 5. Customer Answers Callback → Re-enqueue
 6. Agent Accepts → Bridge Call
@@ -104,12 +124,23 @@ To test queue callback functionality:
 Check server logs for callback activity:
 
 ```bash
-# Callback configuration on enqueue
-🔔 Queue callback enabled: true
-🔔 Queue callback configuration:
+# Gather prompt
+🎤 Starting gather with speak to offer callback option...
+✅ Gather with speak initiated successfully
+
+# Digit selection
+=== GATHER ENDED ===
+Digits collected: 1 (or 2)
+📞 Caller pressed 1 - staying on hold without callback
+(or)
+🔔 Caller pressed 2 - enabling callback
+
+# Enqueue with callback
+🔔 Queue callback enabled:
    - Callback URL: https://your-domain.com/api/voice/queue-callback
    - Callback timeout: 300 seconds
    - Max wait time: 600 seconds
+✅ Call successfully enqueued with callback support
 
 # Callback webhook events
 === QUEUE CALLBACK WEBHOOK ===
