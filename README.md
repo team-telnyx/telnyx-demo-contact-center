@@ -25,6 +25,7 @@
 - [ Table of Contents](#-table-of-contents)
 - [ Overview](#-overview)
 - [ Features](#-features)
+- [ Release Notes](#-release-notes)
 - [ Repository Structure](#-repository-structure)
 - [ Modules](#modules)
 - [ Getting Started](#-getting-started)
@@ -45,13 +46,61 @@ The following repository houses a WebRTC contact center application, building a 
 
 ##  Features
 
-- Call Bridging 
+- Call Bridging
 - Cold Transfer
 - Warm Transfer
 - Conferencing
 - Hold, Unhold, Hangup, Dial
 - Inbound Messaging
 - Outbound Messaging
+- Hold Music with Base64-encoded MP3 playback
+- Real-time Telnyx Status Monitoring
+- Enhanced Authentication and Protected Routes
+
+---
+
+##  Release Notes
+
+### Version 3.1.0 (Latest)
+**Released:** 2025-01-28
+
+#### 🎵 New Features
+- **Hold Music System**: Base64-encoded MP3 playback (923KB) with infinite loop
+- **Telnyx Status Monitoring**: Real-time service status components
+- **Phone Validation Enhancement**: Improved validation for multiple formats and country codes
+
+#### 🔒 Authentication Improvements
+- Enhanced ProtectedRoute component with better redirect logic
+- Removed redundant authentication checks for better performance
+- Improved authentication state handling
+
+#### 🎨 UI Enhancements
+- Updated Dashboard with better layout and responsiveness
+- Enhanced SmsPage with improved message handling
+- Refined Softphone and SoftphoneMini components
+
+[View Full Release Notes](https://github.com/team-telnyx/SE-webrtc-contact_center/releases/tag/v3.1.0)
+
+---
+
+### Version 3.0.0
+**Released:** 2024
+
+#### Major Upgrade
+- Migration to Next.js 15 and TypeScript
+- Enhanced call management system
+- Refactored WebRTC call handling
+- Updated UI components with Material-UI
+- Improved database models with enhanced call tracking
+
+[View Full Release Notes](https://github.com/team-telnyx/SE-webrtc-contact_center/releases/tag/v3.0.0)
+
+---
+
+### All Releases
+View all releases and their detailed notes on GitHub:
+- [Latest Releases](https://github.com/team-telnyx/SE-webrtc-contact_center/releases)
+- [Release Tags](https://github.com/team-telnyx/SE-webrtc-contact_center/tags)
 
 ---
 
