@@ -23,7 +23,8 @@ const nextConfig: NextConfig = {
     // your project has type errors.
     ignoreBuildErrors: true,
   },
-  outputFileTracingRoot: path.join(__dirname, "../../"),
+  // Removed outputFileTracingRoot to fix OpenNext standalone path issue
+  // outputFileTracingRoot: path.join(__dirname, "../../"),
 
   // Reduce bundle size
   compiler: {
@@ -36,6 +37,9 @@ const nextConfig: NextConfig = {
   experimental: {
     optimizePackageImports: ['@mui/material', '@mui/icons-material'],
   },
+
+  // Cloudflare Workers with OpenNext adapter
+  output: 'standalone',
 };
 
 export default nextConfig;

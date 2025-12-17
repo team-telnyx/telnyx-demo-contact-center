@@ -1,4 +1,5 @@
-const EventEmitter = require('events');
+import { EventEmitter } from 'events';
+import { broadcast } from '../routes/websocket.js';
 
 class CallEventEmitter extends EventEmitter {
   constructor() {
@@ -22,12 +23,17 @@ class CallEventEmitter extends EventEmitter {
   }
 
   // Emit queue update
-  emitQueueUpdate() {
+  emitQueueUpdate(env, data = {}) {
     this.emit('QUEUE_UPDATE');
+    try {
+      broadcast('QUEUE_UPDATE', data, env);
+    } catch (error) {
+      console.error('❌ Error broadcasting QUEUE_UPDATE over WebSocket:', error);
+    }
   }
 }
 
 // Singleton instance
 const callEventEmitter = new CallEventEmitter();
 
-module.exports = callEventEmitter;
+export default callEventEmitter;

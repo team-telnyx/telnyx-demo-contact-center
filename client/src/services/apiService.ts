@@ -1,9 +1,12 @@
 import axios, { AxiosInstance, AxiosResponse } from 'axios';
 
-// Use HTTPS if explicitly enabled or in production
-const protocol = (process.env.NODE_ENV === 'production' || process.env.NEXT_PUBLIC_HTTPS === 'true') ? 'https' : 'http';
-const port = process.env.NEXT_PUBLIC_API_PORT ? `:${process.env.NEXT_PUBLIC_API_PORT}` : '';
-const API_BASE_URL = `${protocol}://${process.env.NEXT_PUBLIC_API_HOST}${port}/api`;
+// Use NEXT_PUBLIC_API_URL if available (for production/Workers),
+// otherwise construct from HOST/PORT (for local development)
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || (() => {
+  const protocol = (process.env.NODE_ENV === 'production' || process.env.NEXT_PUBLIC_HTTPS === 'true') ? 'https' : 'http';
+  const port = process.env.NEXT_PUBLIC_API_PORT ? `:${process.env.NEXT_PUBLIC_API_PORT}` : '';
+  return `${protocol}://${process.env.NEXT_PUBLIC_API_HOST}${port}/api`;
+})();
 
 interface LoginCredentials {
   username: string;
@@ -14,6 +17,9 @@ interface UserData {
   username: string;
   email?: string;
   password?: string;
+  firstName?: string;
+  lastName?: string;
+  phoneNumber?: string;
   role?: string;
   status?: string;
 }
@@ -233,6 +239,17 @@ class ApiService {
 
   async markAsRead(conversationId: string): Promise<any> {
     const response = await this.client.patch(`/conversations/${conversationId}/read`);
+    return response.data;
+  }
+
+  // Telnyx Number Management (New Flow)
+  async searchPhoneNumbers(filters: any): Promise<any> {
+    const response = await this.client.get('/telnyx/available-numbers', { params: filters });
+    return response.data;
+  }
+
+  async purchasePhoneNumber(data: { phoneNumber: string, connectionId: string, username: string }): Promise<any> {
+    const response = await this.client.post('/telnyx/purchase-number', data);
     return response.data;
   }
 

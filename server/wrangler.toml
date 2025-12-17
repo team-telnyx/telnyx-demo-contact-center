@@ -1,0 +1,51 @@
+# Cloudflare Workers Configuration
+# This configures the backend API and WebSocket server
+
+name = "contact-center-api"
+main = "worker.js"
+compatibility_date = "2024-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# D1 Database binding
+[[d1_databases]]
+binding = "DB"
+database_name = "contact-center-db"
+database_id = "8bb564a7-f70a-449c-b2da-492bebc08e9a"
+
+# Durable Object bindings
+[[durable_objects.bindings]]
+name = "CONTACT_CENTER_ROOM"
+class_name = "ContactCenterRoom"
+script_name = "contact-center-api"
+
+# Durable Object migrations
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ContactCenterRoom"]
+
+# Environment variables
+[vars]
+NODE_ENV = "production"
+PORT = "3000"
+
+# Secrets (set using: wrangler secret put SECRET_NAME)
+# - SESSION_SECRET ✓
+# - TELNYX_API_KEY ✓
+# - JWT_SECRET ✓
+# - ANTHROPIC_API_KEY ✓
+# - ENCRYPTION_SECRET ✓
+
+# Routes - API endpoints
+[[routes]]
+pattern = "contactcenter.telnyx.solutions/api/*"
+zone_name = "telnyx.solutions"
+
+# Development configuration
+[dev]
+port = 3000
+
+# Build configuration - mark Sequelize modules as external
+[[rules]]
+type = "ESModule"
+globs = ["**/*.js"]
+fallthrough = false

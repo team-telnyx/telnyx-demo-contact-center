@@ -4,8 +4,17 @@ export const getApiProtocol = (): string => {
 };
 
 export const getApiBaseUrl = (): string => {
+  // Use NEXT_PUBLIC_API_URL if available (for production/Workers),
+  // otherwise construct from HOST/PORT (for local development)
+  if (process.env.NEXT_PUBLIC_API_URL) {
+    // Remove /api suffix if it exists since callers will add it
+    return process.env.NEXT_PUBLIC_API_URL.replace(/\/api$/, '');
+  }
+
   const protocol = getApiProtocol();
-  return `${protocol}://${process.env.NEXT_PUBLIC_API_HOST}:${process.env.NEXT_PUBLIC_API_PORT}`;
+  const port = process.env.NEXT_PUBLIC_API_PORT ? `:${process.env.NEXT_PUBLIC_API_PORT}` : '';
+  const host = process.env.NEXT_PUBLIC_API_HOST || 'localhost';
+  return `${protocol}://${host}${port}`;
 };
 
 // For Next.js API routes, we'll use HTTP endpoints instead of websockets

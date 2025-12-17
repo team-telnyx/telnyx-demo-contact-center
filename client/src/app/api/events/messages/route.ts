@@ -2,6 +2,15 @@ import { NextRequest } from 'next/server';
 
 export const dynamic = 'force-dynamic';
 
+// Use NEXT_PUBLIC_API_URL if available (for production/Workers),
+// otherwise construct from HOST/PORT (for local development)
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || (() => {
+  const protocol = (process.env.NODE_ENV === 'production' || process.env.NEXT_PUBLIC_HTTPS === 'true') ? 'https' : 'http';
+  const port = process.env.NEXT_PUBLIC_API_PORT ? `:${process.env.NEXT_PUBLIC_API_PORT}` : '';
+  const host = process.env.NEXT_PUBLIC_API_HOST || 'localhost';
+  return `${protocol}://${host}${port}/api`;
+})();
+
 export async function GET(request: NextRequest) {
   const encoder = new TextEncoder();
   const username = request.nextUrl.searchParams.get('username');
@@ -18,7 +27,7 @@ export async function GET(request: NextRequest) {
       const pollAssignedInterval = setInterval(async () => {
         try {
           const response = await fetch(
-            `http://${process.env.NEXT_PUBLIC_API_HOST}:${process.env.NEXT_PUBLIC_API_PORT}/api/conversations/assignedTo/${username}`
+            `${API_BASE_URL}/conversations/assignedTo/${username}`
           );
 
           if (response.ok) {
@@ -36,7 +45,7 @@ export async function GET(request: NextRequest) {
       const pollUnassignedInterval = setInterval(async () => {
         try {
           const response = await fetch(
-            `http://${process.env.NEXT_PUBLIC_API_HOST}:${process.env.NEXT_PUBLIC_API_PORT}/api/conversations/unassignedConversations`
+            `${API_BASE_URL}/conversations/unassignedConversations`
           );
 
           if (response.ok) {

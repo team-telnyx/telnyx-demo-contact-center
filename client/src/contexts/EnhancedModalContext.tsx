@@ -26,6 +26,15 @@ interface EnhancedModalContextType {
 
 export const EnhancedModalContext = createContext<EnhancedModalContextType | undefined>(undefined);
 
+// Use NEXT_PUBLIC_API_URL if available (for production/Workers),
+// otherwise construct from HOST/PORT (for local development)
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || (() => {
+  const protocol = (process.env.NODE_ENV === 'production' || process.env.NEXT_PUBLIC_HTTPS === 'true') ? 'https' : 'http';
+  const port = process.env.NEXT_PUBLIC_API_PORT ? `:${process.env.NEXT_PUBLIC_API_PORT}` : '';
+  const host = process.env.NEXT_PUBLIC_API_HOST || 'localhost';
+  return `${protocol}://${host}${port}/api`;
+})();
+
 export const useEnhancedModal = () => {
   const context = useContext(EnhancedModalContext);
   if (!context) {
@@ -178,10 +187,7 @@ export const EnhancedModalProvider = ({ children }: { children: ReactNode }) => 
       storeSetStatus('dialing');
 
       // Call backend to place the call
-      const apiHost = process.env.NEXT_PUBLIC_API_HOST || 'localhost';
-      const apiPort = process.env.NEXT_PUBLIC_API_PORT || '3000';
-      const protocol = apiHost.startsWith('http') ? '' : 'http://';
-      const apiUrl = `${protocol}${apiHost}:${apiPort}/api/voice/place-outbound-call`;
+      const apiUrl = `${API_BASE_URL}/voice/place-outbound-call`;
 
       const response = await fetch(
         apiUrl,

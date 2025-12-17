@@ -1,26 +1,17 @@
-// Import required modules and config
-require('dotenv').config();
-const express = require('express');
-const session = require('express-session');
-const cors = require('cors');
-const path = require('path');
-const userRoutes = require('./routes/userRoutes');
-const inboundVoiceRoutes = require('./routes/inboundVoiceRoutes');
-const outboundVoiceRoutes = require('./routes/outboundVoiceRoutes');
-const conversationRoutes = require('./routes/conversationRoutes');
-const telnyxRoutes = require('./routes/telnyxRoutes');
-const sseRoutes = require('./routes/sseRoutes');
-const bodyParser = require('body-parser');
-const sequelize = require('./config/database'); // Importing database config
-const fs = require('fs');
-const https = require('https');
-const seedDatabase = require('./seeds/seed');
-const { initWebSocket } = require('./routes/websocket');
-// Ensure models are registered before sync
-require('./models/CallSession');
-require('./models/CallLeg');
+// Import required modules
+import 'dotenv/config';
+import http from 'http';
+import https from 'https';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-const app = express();
+// Import the configured Express app from app.js
+import app from './app.js';
+import { initWebSocket } from './routes/websocket.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 let server;
 
@@ -30,95 +21,76 @@ const useHTTPS = process.env.NODE_ENV === 'production' || process.env.ENABLE_HTT
 if (useHTTPS) {
   try {
     let privateKey, certificate;
-    
+
     if (process.env.NODE_ENV === 'production' && process.env.SSL_PRIVATE_KEY_PATH && process.env.SSL_CERTIFICATE_PATH) {
       // Production SSL certificates
       privateKey = fs.readFileSync(process.env.SSL_PRIVATE_KEY_PATH, 'utf8');
       certificate = fs.readFileSync(process.env.SSL_CERTIFICATE_PATH, 'utf8');
     } else {
       // Development self-signed certificates
-      privateKey = fs.readFileSync('./key.pem', 'utf8');
-      certificate = fs.readFileSync('./cert.pem', 'utf8');
+      // Try to resolve paths relative to current directory
+      const keyPath = path.resolve(__dirname, 'key.pem');
+      const certPath = path.resolve(__dirname, 'cert.pem');
+
+      if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
+        privateKey = fs.readFileSync(keyPath, 'utf8');
+        certificate = fs.readFileSync(certPath, 'utf8');
+      } else {
+        throw new Error('SSL certificates not found');
+      }
     }
-    
+
     const credentials = {
       key: privateKey,
       cert: certificate
     };
-    
+
     server = https.createServer(credentials, app);
     console.log('Using HTTPS server');
   } catch (error) {
-    console.warn('SSL certificates not found, falling back to HTTP server');
-    const http = require('http');
+    console.warn(`SSL initialization failed: ${error.message}`);
+    console.warn('Falling back to HTTP server');
     server = http.createServer(app);
   }
 } else {
-  const http = require('http');
   server = http.createServer(app);
   console.log('Using HTTP server for development');
 }
+
+// Initialize WebSocket
 initWebSocket(server);
-// Session setup
-app.use(
-  session({
-    secret: process.env.SESSION_SECRET || 'fallback-session-secret-for-dev',
-    resave: false,
-    saveUninitialized: true,
-  })
-);
 
-// Middleware
-app.use(cors({
-  origin: [
-    'http://localhost:3001',
-    'http://localhost:3000',
-    'https://localhost:3001',
-    'https://localhost:3000',
-    'https://telnyx.solutions'
-  ],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
-}));
-app.use(bodyParser.json({limit: '20mb'}));
-
-// User Routes
-// Serve static files from React build (for ngrok access)
+// Serve static files from React build (for production/ngrok access)
 const clientBuildPath = path.join(__dirname, '../client/build');
-if (require('fs').existsSync(clientBuildPath)) {
-  app.use(express.static(clientBuildPath));
-  console.log('Serving React app from:', clientBuildPath);
-}
+if (fs.existsSync(clientBuildPath)) {
+  // Use express.static to serve files from the build directory
+  // Note: app.use is already defined in app.js, but we can add more middleware here
+  // However, since app is imported, we should probably add this logic inside app.js or 
+  // just handle it here if it's specific to the Node server entry point.
+  // Since app.js is shared with Workers, it's better to keep static file serving here?
+  // Actually, we can attach it to the app instance.
 
-app.use('/api/users', userRoutes);
-app.use('/api/conversations', conversationRoutes);
-app.use('/api/voice', inboundVoiceRoutes);
-app.use('/api/voice', outboundVoiceRoutes);
-app.use('/api/telnyx', telnyxRoutes);
-app.use('/api/sse', sseRoutes);
-app.use('/api/events', sseRoutes);  // Also mount at /api/events for consistency
+  // We need to import express to use express.static, but app is an express instance.
+  // Let's import express just for static middleware if needed, but app.use works on the instance.
+  // But wait, express.static is a function on the express module.
+  import('express').then(({ default: express }) => {
+    app.use(express.static(clientBuildPath));
+    console.log('Serving React app from:', clientBuildPath);
 
-// Serve React app for all non-API routes (SPA support)
-if (require('fs').existsSync(clientBuildPath)) {
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(clientBuildPath, 'index.html'));
+    // Serve React app for all non-API routes (SPA support)
+    app.get('*', (req, res, next) => {
+      if (req.path.startsWith('/api')) {
+        return next();
+      }
+      res.sendFile(path.join(clientBuildPath, 'index.html'));
+    });
   });
 }
 
 const PORT = process.env.PORT || 3000;
 
-// Sync the database and then start the server
-const init = async () => {
-  try {
-    await sequelize.sync({ force: process.env.NODE_ENV === 'development' });
-    await seedDatabase(); 
-    server.listen(PORT, '0.0.0.0', () => {
-      console.log(`Server is running on port ${PORT} and accessible from any IP address`);
-    });
-  } catch (err) {
-    console.error('Error initializing database:', err);
-  }
-};
-
-init();
+// Start the server
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server is running on port ${PORT} and accessible from any IP address`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+});

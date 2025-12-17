@@ -1,4 +1,4 @@
-const axios = require('axios');
+import axios from 'axios';
 
 class TelnyxService {
   constructor() {
@@ -195,4 +195,4 @@ class TelnyxService {
   }
 }
 
-module.exports = new TelnyxService();
+export default new TelnyxService();

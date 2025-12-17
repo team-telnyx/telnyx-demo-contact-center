@@ -1,6 +1,6 @@
 // database.js
-require('dotenv').config({path:'../.env'});
-const { Sequelize } = require('sequelize');
+import 'dotenv/config';
+import { Sequelize } from 'sequelize';
 
 // Use SQLite for development, MySQL for production
 const sequelize = process.env.NODE_ENV === 'production' 
@@ -30,4 +30,4 @@ sequelize.authenticate()
 // Create tables if they don't exist (removed auto-sync from config)
 // Tables will be synced when server starts
 
-module.exports = sequelize;
+export default sequelize;

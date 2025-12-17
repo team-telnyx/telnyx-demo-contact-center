@@ -2,10 +2,11 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import apiService from '../services/apiService';
-import { useServerSentEvents } from '@/hooks/useServerSentEvents';
+import { useGlobalWebSocket } from '@/contexts/WebSocketContext';
 import { SIPCredentialsContext } from './SIPCredentialsContext';
 import { getState as getCallStoreState, clear as clearCallStore } from '@/lib/call-store';
 import { notificationService } from '@/utils/notifications';
+import { useUnreadCount } from '@/hooks/useUnreadCount';
 
 interface Call {
   id: string;
@@ -76,6 +77,12 @@ export const CallManagerProvider: React.FC<CallManagerProviderProps> = ({
 }) => {
   // Get SIP credentials from context
   const sipCredentials = useContext(SIPCredentialsContext);
+
+  // Get unread count context for badge updates
+  const { setCallQueueUnreadCount } = useUnreadCount();
+
+  // Get global WebSocket for real-time call updates
+  const { subscribe: subscribeToGlobalWS } = useGlobalWebSocket();
 
   // Call states
   const [activeCall, setActiveCall] = useState<Call | null>(null);
@@ -154,63 +161,94 @@ export const CallManagerProvider: React.FC<CallManagerProviderProps> = ({
           direction: 'inbound'
         }));
         setIncomingCalls(formattedCalls);
+        setCallQueueUnreadCount(formattedCalls.length);
       } else {
         setIncomingCalls([]);
+        setCallQueueUnreadCount(0);
       }
     } catch (error) {
       console.error('CallManager: Failed to refresh call data:', error);
     }
   }, [username, buildActiveCallFromSession, callState]);
 
-  // Use Server-Sent Events for real-time call updates
-  useServerSentEvents({
-    url: '/api/events/calls',
-    enabled: !!username,
-    onMessage: (data) => {
-      // Only log important events, not routine updates
-      if (data.type !== 'QUEUE_UPDATE') {
-        console.log('CallManager SSE:', data.type);
-      }
+  // Subscribe to WebSocket events for real-time call updates
+  useEffect(() => {
+    if (!username) return;
 
-      if (data.type === 'QUEUE_UPDATE') {
-        // Process queue update from SSE
-        // Don't reset state if we're currently dialing (accepting a call)
-        const queueData = data.data;
-        if (queueData?.incomingCalls) {
-          const formattedCalls = queueData.incomingCalls.map((call: any) => ({
-            id: call.call_control_id || call.id,
-            type: 'queue',
-            from: call.from || 'Unknown',
-            to: call.to || '',
-            timestamp: new Date(call.created_at || Date.now()),
-            state: 'INCOMING',
-            callControlId: call.call_control_id,
-            direction: 'inbound'
-          }));
+    console.log('📡 CallManager: Setting up WebSocket subscriptions');
 
-          // Detect new calls and trigger notification
-          const newCallCount = formattedCalls.length;
-          const previousCallCount = incomingCalls.length;
+    // Subscribe to NEW_CALL events
+    const unsubscribeNewCall = subscribeToGlobalWS('NEW_CALL', (data) => {
+      console.log('📞 CallManager: NEW_CALL event received', data);
 
-          if (newCallCount > previousCallCount) {
-            const newCalls = formattedCalls.slice(previousCallCount);
-            newCalls.forEach((call: any) => {
-              console.log('📞 New incoming call:', call.from);
-              notificationService.notifyNewCall(call.from);
-            });
+      const call = data.call;
+      const formattedCall = {
+        id: call.call_control_id || call.id,
+        type: 'queue' as const,
+        from: call.from || 'Unknown',
+        to: call.to || '',
+        timestamp: new Date(call.created_at || Date.now()),
+        state: 'INCOMING',
+        callControlId: call.call_control_id,
+        direction: 'inbound' as const
+      };
+
+      // Add to incoming calls
+      setIncomingCalls(prev => {
+        const exists = prev.find(c => c.id === formattedCall.id);
+        if (exists) return prev;
+
+        console.log('📞 New incoming call from:', formattedCall.from);
+        notificationService.notifyNewCall(formattedCall.from);
+
+        const updated = [...prev, formattedCall];
+        setCallQueueUnreadCount(updated.length);
+        return updated;
+      });
+    });
+
+    // Subscribe to CALL_ENDED events
+    const unsubscribeCallEnded = subscribeToGlobalWS('CALL_ENDED', (data) => {
+      console.log('📞 CallManager: CALL_ENDED event received', data);
+
+      const callControlId = data.callControlId;
+
+      // Remove from incoming calls
+      setIncomingCalls(prev => {
+        const updated = prev.filter(c => c.callControlId !== callControlId);
+        setCallQueueUnreadCount(updated.length);
+        return updated;
+      });
+
+      // Clear active call if it matches
+      setActiveCall(prev => {
+        if (prev?.callControlId === callControlId) {
+          setCallState('IDLE');
+          setIsCallModalOpen(false);
+          setModalType(null);
+
+          // Also trigger WebRTC call hangup if there's an active WebRTC call
+          const currentCallState = getCallStoreState();
+          if (currentCallState.call && typeof currentCallState.call.hangup === 'function') {
+            try {
+              currentCallState.call.hangup();
+              clearCallStore();
+            } catch (error) {
+              console.error('CallManager: Error hanging up WebRTC call:', error);
+            }
           }
 
-          setIncomingCalls(formattedCalls);
-        } else {
-          // Only clear incoming calls if we're not currently dialing
-          if (callState !== 'DIALING') {
-            setIncomingCalls([]);
-          }
+          return null;
         }
-      }
+        return prev;
+      });
+    });
 
-      if (data.type === 'CALL_ACCEPTED' || data.type === 'CALL_BRIDGED') {
-        // Update active call state to ACTIVE
+    // Subscribe to CALL_UPDATED events (for bridging, accepting, etc.)
+    const unsubscribeCallUpdated = subscribeToGlobalWS('CALL_UPDATED', (data) => {
+      console.log('📞 CallManager: CALL_UPDATED event received', data);
+
+      if (data.status === 'active' || data.status === 'bridged') {
         setCallState('ACTIVE');
         if (activeCall) {
           setActiveCall({
@@ -219,29 +257,41 @@ export const CallManagerProvider: React.FC<CallManagerProviderProps> = ({
           });
         }
       }
+    });
 
-      if (data.type === 'CALL_ENDED' || data.type === 'CALL_HANGUP') {
-        setActiveCall(null);
-        setCallState('IDLE');
-        setIsCallModalOpen(false);
-        setModalType(null);
+    // Subscribe to CALL_DEQUEUED events (when calls are removed from queue)
+    const unsubscribeCallDequeued = subscribeToGlobalWS('CALL_DEQUEUED', (data) => {
+      console.log('📤 CallManager: CALL_DEQUEUED event received', data);
 
-        // Also trigger WebRTC call hangup if there's an active WebRTC call
-        const currentCallState = getCallStoreState();
-        if (currentCallState.call && typeof currentCallState.call.hangup === 'function') {
-          try {
-            currentCallState.call.hangup();
-            clearCallStore();
-          } catch (error) {
-            console.error('CallManager: Error hanging up WebRTC call:', error);
-          }
-        }
-      }
-    },
-    onError: (error) => {
-      // Silently handle SSE errors
-    }
-  });
+      const callControlId = data.callControlId;
+
+      // Remove from incoming calls immediately
+      setIncomingCalls(prev => {
+        const updated = prev.filter(c => c.callControlId !== callControlId);
+        setCallQueueUnreadCount(updated.length);
+        console.log('📤 Removed dequeued call from queue display:', callControlId);
+        return updated;
+      });
+    });
+
+    // Subscribe to QUEUE_UPDATE events (trigger full refresh)
+    const unsubscribeQueueUpdate = subscribeToGlobalWS('QUEUE_UPDATE', (_data) => {
+      console.log('📤 CallManager: QUEUE_UPDATE event received - refreshing queue');
+      refreshCallData();
+    });
+
+    console.log('📡 CallManager: WebSocket subscriptions set up successfully');
+
+    // Cleanup subscriptions
+    return () => {
+      console.log('📡 CallManager: Cleaning up WebSocket subscriptions');
+      unsubscribeNewCall();
+      unsubscribeCallEnded();
+      unsubscribeCallUpdated();
+      unsubscribeCallDequeued();
+      unsubscribeQueueUpdate();
+    };
+  }, [username, subscribeToGlobalWS, activeCall, callState, setCallQueueUnreadCount, refreshCallData]);
 
   // Initial load only
   useEffect(() => {

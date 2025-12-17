@@ -1,5 +1,5 @@
-const { DataTypes, Model } = require('sequelize');
-const sequelize = require('../config/database'); // Make sure this path is correct
+import { DataTypes, Model } from 'sequelize';
+import sequelize from '../config/database.js'; // Make sure this path is correct
 
 class Voice extends Model {}
 
@@ -64,4 +64,4 @@ Voice.init({
 // If you don't have a table created, you can use this to create it based on your model
 // Voice.sync({ force: true }); // This will forcefully create the table and drop it first if it already exists
 
-module.exports = Voice;
+export default Voice;

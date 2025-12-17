@@ -30,7 +30,7 @@ import {
   CircularProgress
 } from '@mui/material';
 import { useUnreadCount } from '@/hooks/useUnreadCount';
-import { useServerSentEvents } from '@/hooks/useServerSentEvents';
+import { useConversationManager } from '@/contexts/ConversationManagerContext';
 import Draggable from 'react-draggable';
 import CountryCodeSelector from './CountryCodeSelector';
 import { validatePhoneNumberWithCountry, buildPhoneNumber } from '@/utils/phoneValidation';
@@ -67,15 +67,21 @@ interface SmsPageProps {
   isOpen: boolean;
 }
 
+// Use NEXT_PUBLIC_API_URL if available (for production/Workers),
+// otherwise construct from HOST/PORT (for local development)
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || (() => {
+  const protocol = (process.env.NODE_ENV === 'production' || process.env.NEXT_PUBLIC_HTTPS === 'true') ? 'https' : 'http';
+  const port = process.env.NEXT_PUBLIC_API_PORT ? `:${process.env.NEXT_PUBLIC_API_PORT}` : '';
+  const host = process.env.NEXT_PUBLIC_API_HOST || 'localhost';
+  return `${protocol}://${host}${port}/api`;
+})();
+
 const getAgentsWithTag = async (tag: string): Promise<string[]> => {
   try {
     const token = localStorage.getItem('token');
-    const apiHost = process.env.NEXT_PUBLIC_API_HOST || 'localhost';
-    const apiPort = process.env.NEXT_PUBLIC_API_PORT || '3000';
-    const protocol = apiHost.startsWith('http') ? '' : 'http://';
 
     const response = await axios.get(
-      `${protocol}${apiHost}:${apiPort}/api/telnyx/phone-numbers`,
+      `${API_BASE_URL}/telnyx/phone-numbers`,
       {
         params: {
           tag: tag,
@@ -89,7 +95,11 @@ const getAgentsWithTag = async (tag: string): Promise<string[]> => {
       }
     );
 
-    const agentNumbers: string[] = response.data.data || [];
+    // response.data.data is an array of phone number objects, extract just the phone_number strings
+    const phoneNumberObjects = response.data.data || [];
+    const agentNumbers: string[] = Array.isArray(phoneNumberObjects)
+      ? phoneNumberObjects.map((obj: any) => typeof obj === 'string' ? obj : obj.phone_number)
+      : [];
     return agentNumbers;
   } catch (error) {
     console.error('Error fetching agent numbers:', error);
@@ -115,21 +125,24 @@ function DraggablePaperComponent(props: any) {
 }
 
 const SmsPage: React.FC<SmsPageProps> = ({ isOpen }) => {
-  const { isLoggedIn, username } = useAuth();
+  const { isLoggedIn, username, isLoading: authLoading } = useAuth();
   const [conversationMessages, setConversationMessages] = useState<Message[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
   const [agentNumbers, setAgentNumbers] = useState<string[]>([]);
   const [composeAgentNumber, setComposeAgentNumber] = useState<string>('');
   const [newMessage, setNewMessage] = useState<NewMessage>({ to: '', body: '' });
   const [isComposeDialogOpen, setIsComposeDialogOpen] = useState<boolean>(false);
-  const [messageQueue, setMessageQueue] = useState<Conversation[]>([]);
   const [isSending, setIsSending] = useState<boolean>(false); // Loading state for sending messages
   const [composeCountryCode, setComposeCountryCode] = useState<string>('+1'); // Default to US
   const [composeValidationError, setComposeValidationError] = useState<string | null>(null);
   const { setUnreadCount, setQueueUnreadCount } = useUnreadCount();
   const { getCachedAgentNumbers } = useDataCache();
+  const { markConversationAsRead, assignedConversations, unassignedConversations, subscribeToNewMessages } = useConversationManager();
   const messagesContainerRef = React.useRef<HTMLDivElement>(null);
+
+  // Use conversations from ConversationManagerContext
+  const conversations = assignedConversations.filter(c => c.agent_assigned === username);
+  const messageQueue = unassignedConversations;
 
   // Initialize unread counts
   useEffect(() => {
@@ -144,35 +157,9 @@ const SmsPage: React.FC<SmsPageProps> = ({ isOpen }) => {
     }
   }, [conversationMessages]);
 
-  // Use Server-Sent Events for real-time message updates
-  useServerSentEvents({
-    url: username ? `/api/events/messages?username=${username}` : '',
-    enabled: !!username,
-    onMessage: (data) => {
-      // Only log when conversations actually change
-      if (data.type === 'ASSIGNED_CONVERSATIONS_UPDATE') {
-        setConversations(data.data);
-
-        // If the currently selected conversation was updated, refetch its messages
-        if (selectedConversation) {
-          const updatedConversation = data.data.find(
-            (conv: Conversation) => conv.conversation_id === selectedConversation.conversation_id
-          );
-
-          // Check if the last_message changed
-          if (updatedConversation && updatedConversation.last_message !== selectedConversation.last_message) {
-            // Refetch messages for the currently selected conversation
-            fetchConversationMessages(selectedConversation.conversation_id);
-          }
-        }
-      } else if (data.type === 'UNASSIGNED_CONVERSATIONS_UPDATE') {
-        setMessageQueue(data.data);
-      }
-    },
-    onError: (error) => {
-      // Silently handle SSE errors
-    }
-  });
+  // Conversations are now loaded via WebSocket through ConversationManagerContext
+  // The context provides assignedConversations and unassignedConversations
+  // which are automatically updated in real-time
 
   useEffect(() => {
     if (username) {
@@ -183,48 +170,40 @@ const SmsPage: React.FC<SmsPageProps> = ({ isOpen }) => {
       };
       fetchAgentNumbers();
 
-      // Fetch initial conversation data immediately to prevent blank screen
-      // SSE will keep it updated in real-time after initial load
-      const fetchInitialConversations = async () => {
-        try {
-          const token = localStorage.getItem('token');
-          const apiHost = process.env.NEXT_PUBLIC_API_HOST || 'localhost';
-          const apiPort = process.env.NEXT_PUBLIC_API_PORT || '3000';
-
-          // Fetch assigned conversations
-          const assignedRes = await axios.get(
-            `http://${apiHost}:${apiPort}/api/conversations/assignedTo/${username}`,
-            {
-              headers: {
-                'Authorization': `Bearer ${token}`,
-              },
-            }
-          );
-          setConversations(assignedRes.data);
-
-          // Fetch unassigned conversations (message queue)
-          const unassignedRes = await axios.get(
-            `http://${apiHost}:${apiPort}/api/conversations/unassignedConversations`,
-            {
-              headers: {
-                'Authorization': `Bearer ${token}`,
-              },
-            }
-          );
-          setMessageQueue(unassignedRes.data);
-        } catch (error) {
-          console.error('Error fetching initial conversations:', error);
-        }
-      };
-      fetchInitialConversations();
+      // Note: SSE (via ConversationManagerContext) handles loading conversations
+      // No need to fetch here - it would conflict with SSE's unread-only filtering
     }
   }, [username, getCachedAgentNumbers]);
+
+  // Subscribe to NEW_MESSAGE events from ConversationManagerContext
+  useEffect(() => {
+    if (!selectedConversation) return;
+
+    console.log('📡 SmsPage: Subscribing to NEW_MESSAGE events for conversation:', selectedConversation.conversation_id);
+
+    const unsubscribe = subscribeToNewMessages((conversationId, message) => {
+      console.log('📨 SmsPage: NEW_MESSAGE event received');
+      console.log('📨 Event conversation ID:', conversationId);
+      console.log('📨 Selected conversation ID:', selectedConversation.conversation_id);
+
+      // If it's for the currently selected conversation, refresh messages
+      if (conversationId === selectedConversation.conversation_id) {
+        console.log('🔄 SmsPage: New message for current conversation, refreshing...');
+        fetchConversationMessages(selectedConversation.conversation_id);
+      }
+    });
+
+    return () => {
+      console.log('📡 SmsPage: Unsubscribing from NEW_MESSAGE events');
+      unsubscribe();
+    };
+  }, [selectedConversation, subscribeToNewMessages]);
 
   // Helper function to fetch messages for a conversation
   const fetchConversationMessages = async (conversationId: string) => {
     try {
       const res = await axios.get<Message[]>(
-        `http://${process.env.NEXT_PUBLIC_API_HOST || 'localhost'}:${process.env.NEXT_PUBLIC_API_PORT || '3000'}/api/conversations/conversationMessages/${conversationId}`
+        `${API_BASE_URL}/conversations/conversationMessages/${conversationId}`
       );
       setConversationMessages(res.data);
     } catch (err) {
@@ -235,6 +214,9 @@ const SmsPage: React.FC<SmsPageProps> = ({ isOpen }) => {
   const selectConversation = async (conversation: Conversation) => {
     setSelectedConversation(conversation);
     await fetchConversationMessages(conversation.conversation_id);
+
+    // Mark conversation as read to clear notifications and badge
+    await markConversationAsRead(conversation.conversation_id);
   };
 
   const handleOpenComposeDialog = () => {
@@ -268,7 +250,7 @@ const SmsPage: React.FC<SmsPageProps> = ({ isOpen }) => {
     setIsSending(true);
     try {
       const response = await fetch(
-        `http://${process.env.NEXT_PUBLIC_API_HOST || 'localhost'}:${process.env.NEXT_PUBLIC_API_PORT || '3000'}/api/conversations/composeMessage`,
+        `${API_BASE_URL}/conversations/composeMessage`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -319,14 +301,14 @@ const SmsPage: React.FC<SmsPageProps> = ({ isOpen }) => {
       setIsSending(true);
       try {
         const response = await fetch(
-          `http://${process.env.NEXT_PUBLIC_API_HOST || 'localhost'}:${process.env.NEXT_PUBLIC_API_PORT || '3000'}/api/conversations/composeMessage`,
+          `${API_BASE_URL}/conversations/composeMessage`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              From: selectedConversation.from_number,
+              From: selectedConversation.to_number,
               Text: newMessage.body,
-              To: selectedConversation.to_number,
+              To: selectedConversation.from_number,
               agentUsername: username, // Include username for auto-assignment
             }),
           }
@@ -366,18 +348,25 @@ const SmsPage: React.FC<SmsPageProps> = ({ isOpen }) => {
   // Handle assigning message from queue to current agent
   const handleAssignMessage = async (index: number) => {
     try {
+      const conversationToAssign = messageQueue[index];
+
+      // First assign the agent
       await axios.post(
-        `http://${process.env.NEXT_PUBLIC_API_HOST || 'localhost'}:${process.env.NEXT_PUBLIC_API_PORT || '3000'}/api/conversations/assignAgent`,
+        `${API_BASE_URL}/conversations/assignAgent`,
         {
-          conversation_id: messageQueue[index].conversation_id,
+          conversation_id: conversationToAssign.conversation_id,
           user: username,
         }
       );
 
-      // Remove from queue and add to conversations
-      const assignedConversation = messageQueue[index];
-      setMessageQueue((prevQueue) => prevQueue.filter((_, i) => i !== index));
-      setConversations((prevConversations) => [...prevConversations, assignedConversation]);
+      // Optimistically show the assigned conversation in the detail pane
+      const updatedConversation = {
+        ...conversationToAssign,
+        agent_assigned: username || '',
+        assigned: true,
+      };
+      setSelectedConversation(updatedConversation);
+      await fetchConversationMessages(updatedConversation.conversation_id);
     } catch (error) {
       console.error('Error assigning message:', error);
     }
@@ -396,6 +385,14 @@ const SmsPage: React.FC<SmsPageProps> = ({ isOpen }) => {
   return (
     <>
       <Box>
+        {/* DEBUG INFO - REMOVE AFTER TESTING */}
+        <Box sx={{ mb: 2, p: 2, bgcolor: 'rgba(255, 255, 0, 0.1)', border: '1px solid yellow' }}>
+          <Typography variant="body2">
+            DEBUG: Auth Loading: {authLoading ? 'YES' : 'NO'} | Username: {username || 'NONE'} |
+            Assigned: {assignedConversations.length} | Unassigned: {unassignedConversations.length}
+          </Typography>
+        </Box>
+
         <Typography
           variant="h3"
           component="h1"

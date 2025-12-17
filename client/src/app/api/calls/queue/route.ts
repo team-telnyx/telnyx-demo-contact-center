@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-// Proxy API calls to the backend server
-const API_BASE_URL = `${process.env.NEXT_PUBLIC_API_HOST ?
-  `http://${process.env.NEXT_PUBLIC_API_HOST}:${process.env.NEXT_PUBLIC_API_PORT}` :
-  'http://localhost:8080'}/api`;
+// Use NEXT_PUBLIC_API_URL if available (for production/Workers),
+// otherwise construct from HOST/PORT (for local development)
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || (() => {
+  const protocol = (process.env.NODE_ENV === 'production' || process.env.NEXT_PUBLIC_HTTPS === 'true') ? 'https' : 'http';
+  const port = process.env.NEXT_PUBLIC_API_PORT ? `:${process.env.NEXT_PUBLIC_API_PORT}` : '';
+  const host = process.env.NEXT_PUBLIC_API_HOST || 'localhost';
+  return `${protocol}://${host}${port}/api`;
+})();
 
 export async function GET(request: NextRequest) {
   try {

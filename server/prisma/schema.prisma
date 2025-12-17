@@ -1,0 +1,128 @@
+// Prisma Schema for Cloudflare D1
+// Documentation: https://www.prisma.io/docs/orm/overview/databases/cloudflare-d1
+
+generator client {
+  provider = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          Int       @id @default(autoincrement())
+  firstName   String
+  lastName    String
+  phoneNumber String?
+  username    String    @unique
+  password    String
+  status      Int       @default(0)
+  avatar      Bytes?
+  sipUsername String
+  sipPassword String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@map("Users")
+}
+
+model Voice {
+  uuid              String    @id @default(uuid())
+  direction         String?
+  telnyx_number     String?
+  destination_number String?
+  queue_name        String?
+  accept_agent      String?
+  transfer_agent    String?
+  bridge_uuid       String?
+  queue_uuid        String?   @unique
+  supervisor_call_id String?
+  status            String?   @default("queued")
+  transfer_status   String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([status])
+  @@map("Voices")
+}
+
+model CallSession {
+  id           String     @id @default(uuid())
+  sessionKey   String     @unique
+  status       String     @default("queued")
+  direction    String?
+  from_number  String?
+  to_number    String?
+  started_at   DateTime?
+  ended_at     DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  callLegs     CallLeg[]
+
+  @@index([sessionKey])
+  @@map("call_sessions")
+}
+
+model CallLeg {
+  id              String       @id @default(uuid())
+  call_control_id String       @unique
+  sessionKey      String
+  leg_type        String
+  direction       String?
+  status          String       @default("new")
+  accepted_by     String?
+  hangup_source   String?
+  hangup_cause    String?
+  start_time      DateTime?
+  end_time        DateTime?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  session         CallSession  @relation(fields: [sessionKey], references: [sessionKey], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([call_control_id])
+  @@index([sessionKey])
+  @@map("call_legs")
+}
+
+model Conversation {
+  id              String    @id @default(uuid())
+  conversation_id String    @unique
+  from_number     String?
+  to_number       String?
+  agent_assigned  String?
+  assigned        Boolean?
+  tag             String?
+  last_message    String?
+  last_read_at    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  messages        Message[]
+
+  @@index([conversation_id])
+  @@index([agent_assigned])
+  @@map("Conversations")
+}
+
+model Message {
+  id                 String       @id @default(uuid())
+  direction          String
+  type               String
+  telnyx_number      String
+  destination_number String
+  text_body          String?
+  media              String?
+  tag                String?
+  conversation_id    String
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  conversation       Conversation @relation(fields: [conversation_id], references: [conversation_id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([conversation_id])
+  @@map("Messages")
+}

@@ -76,11 +76,17 @@ class NotificationService {
    * Show a notification for a new call
    */
   async notifyNewCall(from: string, options?: Partial<NotificationOptions>): Promise<void> {
+    console.log('📞 notifyNewCall called with:', from);
+    console.log('📞 Permission granted:', this.permissionGranted);
+    console.log('📞 Notification permission:', typeof window !== 'undefined' ? Notification.permission : 'N/A');
+
     if (!this.permissionGranted) {
+      console.log('📞 Permission not granted, requesting...');
       await this.requestPermission();
     }
 
     if (!this.permissionGranted) {
+      console.warn('⚠️ Cannot show notification - permission not granted');
       return;
     }
 
@@ -99,6 +105,8 @@ class NotificationService {
       ...options,
     };
 
+    console.log('📞 Creating notification with options:', notificationOptions);
+
     try {
       const notification = new Notification(notificationOptions.title, {
         body: notificationOptions.body,
@@ -108,6 +116,8 @@ class NotificationService {
         requireInteraction: notificationOptions.requireInteraction,
         data: notificationOptions.data,
       });
+
+      console.log('✅ Notification created successfully');
 
       // Auto-close after 10 seconds if not requiring interaction
       if (!notificationOptions.requireInteraction) {
@@ -126,7 +136,7 @@ class NotificationService {
 
       console.log('📞 Call notification sent:', from);
     } catch (error) {
-      console.error('Error showing call notification:', error);
+      console.error('❌ Error showing call notification:', error);
     }
   }
 

@@ -53,10 +53,14 @@ const RegisterPage: React.FC = () => {
         password: formData.password
       });
 
-      setSuccess('Registration successful! SIP credentials created. Redirecting to login...');
+      setSuccess('Registration successful! Redirecting to number selection...');
+
+      const { username } = formData;
+      const connectionId = response.telnyx.callControlAppId;
+
       setTimeout(() => {
-        router.push('/login');
-      }, 3000);
+        router.push(`/register/select-number?username=${username}&connectionId=${connectionId}`);
+      }, 1500);
     } catch (error: any) {
       setError(error.response?.data?.message || error.message || 'Registration failed');
     } finally {

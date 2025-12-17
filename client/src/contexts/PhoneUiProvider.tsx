@@ -15,6 +15,15 @@ interface PhoneUiContextType {
 
 const PhoneUiContext = createContext<PhoneUiContextType | undefined>(undefined);
 
+// Use NEXT_PUBLIC_API_URL if available (for production/Workers),
+// otherwise construct from HOST/PORT (for local development)
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || (() => {
+  const protocol = (process.env.NODE_ENV === 'production' || process.env.NEXT_PUBLIC_HTTPS === 'true') ? 'https' : 'http';
+  const port = process.env.NEXT_PUBLIC_API_PORT ? `:${process.env.NEXT_PUBLIC_API_PORT}` : '';
+  const host = process.env.NEXT_PUBLIC_API_HOST || 'localhost';
+  return `${protocol}://${host}${port}/api`;
+})();
+
 export const usePhoneUi = () => {
   const context = useContext(PhoneUiContext);
   if (!context) {
@@ -37,11 +46,7 @@ export const PhoneUiProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     const fetchPhoneNumbers = async () => {
       try {
-        const apiHost = process.env.NEXT_PUBLIC_API_HOST || 'localhost';
-        const apiPort = process.env.NEXT_PUBLIC_API_PORT || '3000';
-        const protocol = apiHost.startsWith('http') ? '' : 'http://';
-
-        const response = await fetch(`${protocol}${apiHost}:${apiPort}/api/users/phone-numbers`, {
+        const response = await fetch(`${API_BASE_URL}/users/phone-numbers`, {
           headers: {
             'Authorization': `Bearer ${localStorage.getItem('token')}`
           }

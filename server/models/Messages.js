@@ -1,5 +1,5 @@
-const { DataTypes, Model } = require('sequelize');
-const sequelize = require('../config/database');
+import { DataTypes, Model } from 'sequelize';
+import sequelize from '../config/database.js';
 
 class Messages extends Model {}
 
@@ -52,4 +52,4 @@ Messages.init({
   modelName: 'Messages'
 });
 
-module.exports = Messages;
+export default Messages;

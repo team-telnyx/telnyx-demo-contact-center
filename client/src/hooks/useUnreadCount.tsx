@@ -43,13 +43,20 @@ export function UnreadCountProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!isInitializedRef.current) {
       // Skip first render to avoid false notifications on page load
+      console.log('🔔 [useUnreadCount] First message render - initializing counts');
+      console.log(`  - unreadCount: ${unreadCount}, queueUnreadCount: ${queueUnreadCount}`);
       prevUnreadCountRef.current = unreadCount;
       prevQueueUnreadCountRef.current = queueUnreadCount;
+      isInitializedRef.current = true;
       return;
     }
 
     const totalPrev = prevUnreadCountRef.current + prevQueueUnreadCountRef.current;
     const totalCurrent = unreadCount + queueUnreadCount;
+
+    console.log('🔔 [useUnreadCount] Message counts changed:');
+    console.log(`  - Previous total: ${totalPrev} (unread: ${prevUnreadCountRef.current}, queue: ${prevQueueUnreadCountRef.current})`);
+    console.log(`  - Current total: ${totalCurrent} (unread: ${unreadCount}, queue: ${queueUnreadCount})`);
 
     if (totalCurrent > totalPrev) {
       const increase = totalCurrent - totalPrev;
@@ -61,6 +68,8 @@ export function UnreadCountProvider({ children }: { children: ReactNode }) {
           ? 'You have 1 new message'
           : `You have ${increase} new messages`
       );
+    } else {
+      console.log('✅ [useUnreadCount] No increase in message count - skipping notification');
     }
 
     prevUnreadCountRef.current = unreadCount;
@@ -69,22 +78,29 @@ export function UnreadCountProvider({ children }: { children: ReactNode }) {
 
   // Watch for new calls in queue
   useEffect(() => {
+    console.log('🔔 [useUnreadCount] callQueueUnreadCount changed to:', callQueueUnreadCount);
+    console.log('🔔 isInitialized:', isInitializedRef.current);
+    console.log('🔔 previous count:', prevCallQueueUnreadCountRef.current);
+
+    // Only process if already initialized (message effect runs first)
     if (!isInitializedRef.current) {
-      // Skip first render to avoid false notifications on page load
+      console.log('🔔 Not initialized yet - setting previous count');
       prevCallQueueUnreadCountRef.current = callQueueUnreadCount;
-      isInitializedRef.current = true;
       return;
     }
 
     if (callQueueUnreadCount > prevCallQueueUnreadCountRef.current) {
       const increase = callQueueUnreadCount - prevCallQueueUnreadCountRef.current;
-      console.log(`📞 New call(s) in queue: ${increase}`);
+      console.log(`📞 New call(s) detected in queue: ${increase}`);
+      console.log(`📞 Triggering notification for call queue`);
 
       notificationService.notifyNewCall(
         increase === 1
           ? '1 caller waiting'
           : `${increase} callers waiting`
       );
+    } else {
+      console.log('🔔 No increase in call queue count, skipping notification');
     }
 
     prevCallQueueUnreadCountRef.current = callQueueUnreadCount;

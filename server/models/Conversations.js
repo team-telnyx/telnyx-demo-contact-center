@@ -1,6 +1,6 @@
-const { DataTypes, Model } = require('sequelize');
-const sequelize = require('../config/database');
-const Messages = require('./Messages'); // Path to the Messages model
+import { DataTypes, Model } from 'sequelize';
+import sequelize from '../config/database.js';
+import Messages from './Messages'; // Path to the Messages model
 
 class Conversations extends Model {}
 
@@ -38,6 +38,10 @@ Conversations.init({
   last_message: {
     type: DataTypes.STRING(1024),
     allowNull: true,
+  },
+  last_read_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
   }
 }, {
   sequelize,
@@ -54,4 +58,4 @@ Messages.belongsTo(Conversations, {
   as: 'conversation'
 });
 
-module.exports = Conversations;
+export default Conversations;

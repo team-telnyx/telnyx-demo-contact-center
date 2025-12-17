@@ -5,8 +5,15 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: NextRequest) {
   const encoder = new TextEncoder();
 
-  // Connect directly to localhost backend to avoid ngrok loop
-  const backendSSEUrl = `http://localhost:3000/api/sse/call-events`;
+  // Use NEXT_PUBLIC_API_URL if available (for production/Workers),
+  // otherwise construct from HOST/PORT (for local development)
+  const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || (() => {
+    const protocol = (process.env.NODE_ENV === 'production' || process.env.NEXT_PUBLIC_HTTPS === 'true') ? 'https' : 'http';
+    const port = process.env.NEXT_PUBLIC_API_PORT ? `:${process.env.NEXT_PUBLIC_API_PORT}` : '';
+    return `${protocol}://${process.env.NEXT_PUBLIC_API_HOST}${port}/api`;
+  })();
+
+  const backendSSEUrl = `${API_BASE_URL}/sse/call-events`;
 
   // Create a readable stream that proxies the backend SSE
   const stream = new ReadableStream({

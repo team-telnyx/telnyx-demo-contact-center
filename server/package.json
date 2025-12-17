@@ -2,15 +2,29 @@
   "name": "server",
   "version": "1.0.0",
   "description": "",
+  "type": "module",
+  "imports": {
+    "#lib/router-shim": {
+      "node": "express",
+      "default": "./lib/router-shim.js"
+    }
+  },
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "node server.js",
+    "postinstall": "patch-package",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:studio": "prisma studio",
+    "prisma:push": "prisma db push"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@prisma/adapter-d1": "^5.22.0",
+    "@prisma/client": "^5.22.0",
     "axios": "^1.11.0",
     "bcryptjs": "^2.4.3",
     "body-parser": "^1.20.2",
@@ -25,5 +39,10 @@
     "socket.io": "^4.8.1",
     "sqlite3": "^5.1.6",
     "telnyx": "^2.0.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.11",
+    "patch-package": "^8.0.1",
+    "prisma": "^5.22.0"
   }
 }

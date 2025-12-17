@@ -5,9 +5,12 @@
   "scripts": {
     "dev": "next dev --port 3001 --turbo",
     "dev:https": "next dev --port 3001 --experimental-https --turbo",
-    "build": "next build",
+    "build": "NEXT_PUBLIC_API_URL=https://contactcenter.telnyx.solutions/api next build",
     "start": "next start --port 3001",
-    "lint": "eslint"
+    "lint": "eslint",
+    "pages:build": "NEXT_PUBLIC_API_URL=https://contactcenter.telnyx.solutions/api npx @opennextjs/cloudflare build",
+    "preview": "npm run pages:build && wrangler dev",
+    "deploy": "NEXT_PUBLIC_API_URL=https://contactcenter.telnyx.solutions/api npx @opennextjs/cloudflare deploy"
   },
   "dependencies": {
     "@emotion/react": "^11.11.1",
@@ -33,6 +36,7 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
+    "@opennextjs/cloudflare": "^1.11.0",
     "@tailwindcss/postcss": "^4",
     "@testing-library/jest-dom": "^5.17.0",
     "@testing-library/react": "^13.4.0",
@@ -43,6 +47,7 @@
     "eslint": "^9",
     "eslint-config-next": "15.5.4",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "wrangler": "^3.80.0"
   }
 }

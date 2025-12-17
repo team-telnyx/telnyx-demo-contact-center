@@ -1,6 +1,6 @@
-const { DataTypes, Model } = require('sequelize');
-const sequelize = require('../config/database');
-const CallSession = require('./CallSession');
+import { DataTypes, Model } from 'sequelize';
+import sequelize from '../config/database.js';
+import CallSession from './CallSession';
 
 class CallLeg extends Model {}
 
@@ -67,5 +67,5 @@ CallLeg.init(
 CallSession.hasMany(CallLeg, { foreignKey: 'sessionKey', sourceKey: 'sessionKey' });
 CallLeg.belongsTo(CallSession, { foreignKey: 'sessionKey', targetKey: 'sessionKey' });
 
-module.exports = CallLeg;
+export default CallLeg;
 
