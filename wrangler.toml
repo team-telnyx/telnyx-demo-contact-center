@@ -25,6 +25,7 @@ new_sqlite_classes = ["ContactCenterRoom"]
 [vars]
 NODE_ENV = "production"
 PORT = "3000"
+APP_HOST = "contactcenter.telnyx.solutions"
 
 # Secrets (set using: wrangler secret put SECRET_NAME)
 # - SESSION_SECRET ✓
