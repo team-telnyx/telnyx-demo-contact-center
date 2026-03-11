@@ -20,7 +20,7 @@
         "dotenv": "^17.2.1",
         "jsonwebtoken": "^9.0.2",
         "node": "^20.19.4",
-        "sequelize": "^6.37.7",
+        "sequelize": "^6.37.8",
         "telnyx": "^1.25.5",
         "ws": "^8.13.0"
     }
