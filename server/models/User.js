@@ -1,5 +1,5 @@
-const { DataTypes, Model } = require('sequelize');
-const sequelize = require('../config/database');
+import { DataTypes, Model } from 'sequelize';
+import sequelize from '../config/database.js';
 
 class User extends Model {}
 
@@ -26,12 +26,12 @@ User.init({
   },
   password: {
     type: DataTypes.STRING,
-    allowNull: false
+    allowNull: true,
   },
   status: {
-    type: DataTypes.BOOLEAN,
+    type: DataTypes.STRING(20),
     allowNull: false,
-    defaultValue: false,  
+    defaultValue: 'offline',
   },
   avatar: {
     type: DataTypes.BLOB,
@@ -39,15 +39,46 @@ User.init({
   },
   sipUsername: {
     type: DataTypes.STRING,
-    allowNull: false 
+    allowNull: true,
   },
   sipPassword: {
     type: DataTypes.STRING,
-    allowNull: false 
+    allowNull: true,
+  },
+  telnyxApiKey: {
+    type: DataTypes.STRING,
+    allowNull: true,
+  },
+  telnyxPublicKey: {
+    type: DataTypes.STRING,
+    allowNull: true,
+  },
+  appConnectionId: {
+    type: DataTypes.STRING,
+    allowNull: true,
+  },
+  webrtcConnectionId: {
+    type: DataTypes.STRING,
+    allowNull: true,
+  },
+  googleId: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    unique: true,
+  },
+  onboardingComplete: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+  },
+  routingPriority: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 10,
   }
 }, {
   sequelize,
   modelName: 'User'
 });
 
-module.exports = User;
+export default User;

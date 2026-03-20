@@ -1,5 +1,5 @@
-const { DataTypes, Model } = require('sequelize');
-const sequelize = require('../config/database');
+import { DataTypes, Model } from 'sequelize';
+import sequelize from '../config/database.js';
 
 class Messages extends Model {}
 
@@ -18,25 +18,32 @@ Messages.init({
     allowNull: false,
   },
   telnyx_number: {
-    type: DataTypes.STRING(15),
+    type: DataTypes.STRING(20),
     allowNull: false,
   },
   destination_number: {
-    type: DataTypes.STRING(15),
+    type: DataTypes.STRING(20),
     allowNull: false,
   },
   text_body: {
-    type: DataTypes.STRING,
+    type: DataTypes.TEXT,
     allowNull: true,
-    charset: 'utf8mb4',
-    collate: 'utf8mb4_unicode_ci'
   },
   media: {
-    type: DataTypes.TEXT,  // Can use JSON or array type based on your database
+    type: DataTypes.TEXT,
     allowNull: true,
   },
   tag: {
     type: DataTypes.STRING(50),
+    allowNull: true,
+  },
+  status: {
+    type: DataTypes.STRING(20),
+    allowNull: false,
+    defaultValue: 'queued',
+  },
+  telnyx_message_id: {
+    type: DataTypes.STRING,
     allowNull: true,
   },
   conversation_id: {
@@ -52,4 +59,4 @@ Messages.init({
   modelName: 'Messages'
 });
 
-module.exports = Messages;
+export default Messages;

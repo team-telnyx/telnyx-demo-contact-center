@@ -1,22 +1,48 @@
+import { Server } from 'socket.io';
+import jwt from 'jsonwebtoken';
+import { env } from '../src/config/env.js';
+
 let io = null;
 
 const initWebSocket = (server) => {
-  io = require('socket.io')(server, {
+  io = new Server(server, {
     cors: {
-      origin: "*",  // This will allow all origins
+      origin: env.CORS_ORIGINS.includes('*') ? '*' : env.CORS_ORIGINS,
       methods: ["GET", "POST"]
     }
   });
 
+  // Authenticate socket connections with JWT
+  io.use((socket, next) => {
+    const token = socket.handshake.auth?.token;
+    if (!token) {
+      return next(new Error('Authentication required'));
+    }
+    try {
+      const payload = jwt.verify(token, env.JWT_SECRET);
+      socket.user = payload;
+      next();
+    } catch (err) {
+      return next(new Error('Invalid token'));
+    }
+  });
+
   io.on('connection', (socket) => {
-    console.log('New client connected:', socket.id);
+    const { username } = socket.user;
+    console.log(`Client connected: ${socket.id} (user: ${username})`);
+
+    // Join user-specific and role-based rooms
+    socket.join(`user:${username}`);
+    if (socket.user.role) {
+      socket.join(`role:${socket.user.role}`);
+    }
 
     socket.on('message', (message) => {
       console.log('Received message:', message);
     });
 
     socket.on('disconnect', () => {
-      console.log('Client disconnected:', socket.id);
+      console.log(`Client disconnected: ${socket.id} (user: ${username})`);
     });
   });
 
@@ -25,8 +51,25 @@ const initWebSocket = (server) => {
   });
 };
 
+// Broadcast to all connected clients
 const broadcast = (type, data) => {
-  io.emit(type, data);
+  if (io) {
+    io.emit(type, data);
+  }
 };
 
-module.exports = { initWebSocket, broadcast };
+// Send to a specific user
+const sendToUser = (username, type, data) => {
+  if (io) {
+    io.to(`user:${username}`).emit(type, data);
+  }
+};
+
+// Send to all users with a specific role
+const sendToRole = (role, type, data) => {
+  if (io) {
+    io.to(`role:${role}`).emit(type, data);
+  }
+};
+
+export { initWebSocket, broadcast, sendToUser, sendToRole };

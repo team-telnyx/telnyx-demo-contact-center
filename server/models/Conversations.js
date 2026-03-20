@@ -1,6 +1,6 @@
-const { DataTypes, Model } = require('sequelize');
-const sequelize = require('../config/database');
-const Messages = require('./Messages'); // Path to the Messages model
+import { DataTypes, Model } from 'sequelize';
+import sequelize from '../config/database.js';
+import Messages from './Messages.js';
 
 class Conversations extends Model {}
 
@@ -16,11 +16,11 @@ Conversations.init({
     unique: true,
   },
   from_number: {
-    type: DataTypes.STRING(15),
+    type: DataTypes.STRING(20),
     allowNull: true,
   },
   to_number: {
-    type: DataTypes.STRING(15),
+    type: DataTypes.STRING(20),
     allowNull: true,
   },
   agent_assigned: {
@@ -54,4 +54,4 @@ Messages.belongsTo(Conversations, {
   as: 'conversation'
 });
 
-module.exports = Conversations;
+export default Conversations;

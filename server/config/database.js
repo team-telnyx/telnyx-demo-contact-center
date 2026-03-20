@@ -1,14 +1,21 @@
 // database.js
-require('dotenv').config({path:'../.env'});
-const { Sequelize } = require('sequelize');
+import 'dotenv/config';
+import { Sequelize } from 'sequelize';
 
 const sequelize = new Sequelize({
   host: process.env.DB_HOST,
+  port: process.env.DB_PORT || 5432,
   username: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  dialect: 'mysql',
-  logging: false
+  dialect: 'postgres',
+  logging: false,
+  pool: {
+    min: 5,
+    max: 30,
+    acquire: 30000,
+    idle: 10000
+  },
 });
 
 // Test connection
@@ -20,13 +27,4 @@ sequelize.authenticate()
     console.error('Unable to connect to the database:', err);
   });
 
-// Create tables if they don't exist
-sequelize.sync({ alter: true }) // Set alter:true to update the table if it already exists
-  .then(() => {
-    console.log('Tables have been synchronized.');
-  })
-  .catch(err => {
-    console.error('Error syncing tables:', err);
-  });
-
-module.exports = sequelize;
+export default sequelize;

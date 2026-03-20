@@ -1,0 +1,150 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+:root {
+  --telnyx-green: #00a37a;
+  --telnyx-green-light: #00e3aa;
+  --telnyx-green-vibrant: #00E896;
+  --telnyx-black: #000000;
+  --bg-light: #eff3f6;
+}
+
+body {
+  font-family: 'Inter', Arial, sans-serif;
+  margin: 0;
+  padding: 0;
+}
+
+/* Dark mode scrollbar */
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.dark .hover-lift:hover {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+/* Glass-morphism utility */
+.glass {
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.glass-dark {
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
+}
+
+/* Hover lift animation */
+.hover-lift {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+/* Call pulse animation for incoming calls */
+@keyframes call-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(0, 232, 150, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 0 12px rgba(0, 232, 150, 0);
+  }
+}
+
+.call-pulse {
+  animation: call-pulse 1.5s ease-in-out infinite;
+}
+
+/* Status pulse */
+@keyframes status-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.status-pulse {
+  animation: status-pulse 2s ease-in-out infinite;
+}
+
+/* ─── Dark mode overrides ─── */
+.dark .bg-white { background-color: #111827 !important; }
+.dark .bg-gray-50 { background-color: #1f2937 !important; }
+.dark .border-gray-200 { border-color: #374151 !important; }
+.dark .border-gray-300 { border-color: #4b5563 !important; }
+.dark .text-gray-900 { color: #f3f4f6 !important; }
+.dark .text-gray-700 { color: #d1d5db !important; }
+.dark .text-gray-600 { color: #9ca3af !important; }
+.dark .text-gray-500 { color: #9ca3af !important; }
+.dark .text-gray-400 { color: #6b7280 !important; }
+.dark .text-gray-300 { color: #9ca3af !important; }
+.dark .divide-y > :not([hidden]) ~ :not([hidden]) { border-color: #374151; }
+.dark .hover\:bg-gray-50:hover { background-color: #1f2937 !important; }
+.dark .hover\:bg-gray-100:hover { background-color: #374151 !important; }
+.dark input, .dark textarea, .dark select {
+  background-color: #1f2937;
+  border-color: #4b5563;
+  color: #f3f4f6;
+}
+.dark input:focus, .dark textarea:focus, .dark select:focus {
+  border-color: #00a37a;
+}
+.dark .bg-gray-100 { background-color: #374151 !important; }
+.dark .bg-gray-200 { background-color: #4b5563 !important; }
+.dark .hover\:bg-gray-200:hover { background-color: #4b5563 !important; }
+.dark .border-gray-100 { border-color: #374151 !important; }
+.dark .border-red-200 { border-color: #991b1b !important; }
+.dark .border-orange-200 { border-color: #92400e !important; }
+.dark .bg-red-50 { background-color: rgba(239, 68, 68, 0.1) !important; }
+.dark .bg-green-50 { background-color: rgba(0, 163, 122, 0.1) !important; }
+.dark .bg-yellow-100 { background-color: rgba(234, 179, 8, 0.15) !important; }
+.dark .bg-orange-50 { background-color: rgba(249, 115, 22, 0.1) !important; }
+.dark .hover\:bg-red-50:hover { background-color: rgba(239, 68, 68, 0.15) !important; }
+.dark .hover\:bg-orange-50:hover { background-color: rgba(249, 115, 22, 0.15) !important; }
+.dark .shadow-sm { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3) !important; }
+.dark .shadow-2xl { box-shadow: 0 25px 50px rgba(0, 0, 0, 0.5) !important; }
+.dark .bg-black\/50 { background-color: rgba(0, 0, 0, 0.7) !important; }
+.dark .text-yellow-700 { color: #fbbf24 !important; }
+.dark .text-red-600 { color: #f87171 !important; }
+.dark .text-red-400 { color: #f87171 !important; }
+.dark .text-orange-500 { color: #fb923c !important; }
+.dark .text-telnyx-green { color: #00e3aa !important; }
+.dark p, .dark label, .dark span, .dark h1, .dark h2, .dark h3 {
+  color: inherit;
+}
