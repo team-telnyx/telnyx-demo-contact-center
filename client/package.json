@@ -1,53 +1,82 @@
 {
-  "name": "nextjs-contact-center",
+  "name": "contact-center-v2-demo",
   "version": "0.1.0",
   "private": true,
-  "scripts": {
-    "dev": "next dev --port 3001 --turbo",
-    "dev:https": "next dev --port 3001 --experimental-https --turbo",
-    "build": "NEXT_PUBLIC_API_URL=https://contactcenter.telnyx.solutions/api next build",
-    "start": "next start --port 3001",
-    "lint": "eslint",
-    "pages:build": "NEXT_PUBLIC_API_URL=https://contactcenter.telnyx.solutions/api npx @opennextjs/cloudflare build",
-    "preview": "npm run pages:build && wrangler dev",
-    "deploy": "NEXT_PUBLIC_API_URL=https://contactcenter.telnyx.solutions/api npx @opennextjs/cloudflare deploy"
-  },
   "dependencies": {
     "@emotion/react": "^11.11.1",
     "@emotion/styled": "^11.11.0",
     "@mui/icons-material": "^5.14.6",
     "@mui/material": "^5.14.6",
+    "@mui/material-next": "^6.0.0-alpha.99",
+    "@reduxjs/toolkit": "^2.0.1",
     "@telnyx/react-client": "^1.0.2",
-    "@telnyx/webrtc": "^2.22.15",
-    "axios": "^1.6.0",
-    "bootstrap": "^5.3.1",
-    "clsx": "^2.1.1",
-    "dotenv": "^16.3.1",
-    "js-sha256": "^0.9.0",
-    "jwt-decode": "^4.0.0",
-    "lucide-react": "^0.548.0",
-    "next": "15.5.4",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-draggable": "^4.4.6",
-    "semantic-ui-css": "^2.5.0",
-    "semantic-ui-react": "^2.1.4",
-    "socket.io-client": "^4.8.1"
-  },
-  "devDependencies": {
-    "@eslint/eslintrc": "^3",
-    "@opennextjs/cloudflare": "^1.11.0",
-    "@tailwindcss/postcss": "^4",
+    "@telnyx/webrtc": "^2.17.0",
     "@testing-library/jest-dom": "^5.17.0",
     "@testing-library/react": "^13.4.0",
     "@testing-library/user-event": "^13.5.0",
-    "@types/node": "^20",
-    "@types/react": "^18",
-    "@types/react-dom": "^18",
-    "eslint": "^9",
-    "eslint-config-next": "15.5.4",
-    "tailwindcss": "^4",
-    "typescript": "^5",
-    "wrangler": "^3.80.0"
+    "axios": "^1.6.0",
+    "bootstrap": "^5.3.1",
+    "class-variance-authority": "^0.7.0",
+    "clsx": "^2.1.0",
+    "dotenv": "^16.3.1",
+    "dotenv-webpack": "^8.0.1",
+    "js-sha256": "^0.9.0",
+    "jwt-decode": "^4.0.0",
+    "next": "^14.1.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-draggable": "^4.4.6",
+    "react-redux": "^9.1.0",
+    "react-router-dom": "^6.15.0",
+    "react-scripts": "^5.0.1",
+    "reactflow": "^11.11.4",
+    "semantic-ui-css": "^2.5.0",
+    "semantic-ui-react": "^2.1.4",
+    "socket.io-client": "^4.7.2",
+    "tailwind-merge": "^2.2.1",
+    "web-vitals": "^2.1.4"
+  },
+  "scripts": {
+    "start:cra": "HTTPS=true PORT=3001 react-scripts start",
+    "build:cra": "react-scripts build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:cra": "react-scripts test",
+    "eject": "react-scripts eject",
+    "dev": "node server.js",
+    "dev:http": "next dev --port 3001",
+    "dev:https": "next dev --port 3001 --experimental-https",
+    "build": "next build",
+    "start:next": "node server.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/react": "^18.2.48",
+    "@types/react-dom": "^18.2.18",
+    "autoprefixer": "^10.4.17",
+    "jsdom": "^24.0.0",
+    "postcss": "^8.4.33",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.0"
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-app",
+      "react-app/jest"
+    ]
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
   }
 }

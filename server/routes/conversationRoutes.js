@@ -1,390 +1,404 @@
-import express from '#lib/router-shim';
-import { getPrismaClient, getPrismaClientLocal } from '../lib/prisma.js';
+import express from 'express';
+import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
-import axios from 'axios';
-import { broadcast } from './websocket.js';
+import { Op } from 'sequelize';
+import { env } from '../src/config/env.js';
+import Telnyx from 'telnyx';
+import Conversations from '../models/Conversations.js';
+import Messages from '../models/Messages.js';
+import { broadcast, sendToUser } from './websocket.js';
 
+const telnyx = new Telnyx({ apiKey: env.TELNYX_API });
 const router = express.Router();
 
-// Initialize Prisma
-let prisma;
-
-const injectPrisma = (req, res, next) => {
-  if (req.env && req.env.DB) {
-    req.prisma = getPrismaClient(req.env.DB);
-  } else {
-    if (!prisma) {
-      prisma = getPrismaClientLocal();
-    }
-    req.prisma = prisma;
-  }
-  next();
-};
-
-router.use(injectPrisma);
-
-function normalizePhoneNumber(number) {
-  if (!number) return '';
-  const trimmed = number.trim();
-
-  if (trimmed.toLowerCase().startsWith('sip:')) {
-    return trimmed.toLowerCase();
-  }
-
-  const digits = trimmed.replace(/\D/g, '');
-  if (!digits) return '';
-  return `+${digits}`;
+function hash(arr) {
+  const sorted = [...arr].sort();
+  return crypto.createHash('sha256').update(sorted.join('')).digest('hex');
 }
 
-function getConversationId(customerNumber) {
-  return normalizePhoneNumber(customerNumber);
+// E.164 validation: + followed by 1-15 digits
+function isValidE164(phone) {
+  return /^\+[1-9]\d{1,14}$/.test(phone);
 }
 
-router.post('/composeMessage', async (req, res) => {
-  const fromPhoneNumber = normalizePhoneNumber(req.body.From);
-  const messageBody = req.body.Text;
-  const dstNum = req.body.To;
-  const agentUsername = req.body.agentUsername;
+// ========================= MEDIA UPLOAD =========================
+import { writeFileSync, mkdirSync, existsSync } from 'fs';
+import { randomUUID } from 'crypto';
+import axios from 'axios';
+
+const UPLOAD_DIR = new URL('../../uploads', import.meta.url).pathname;
+if (!existsSync(UPLOAD_DIR)) mkdirSync(UPLOAD_DIR, { recursive: true });
+
+/**
+ * Download a remote file and store it locally. Returns the local public URL.
+ */
+async function downloadAndStore(remoteUrl, contentType) {
+  try {
+    const response = await axios.get(remoteUrl, { responseType: 'arraybuffer' });
+    const ext = (contentType || 'application/octet-stream').split('/')[1]?.replace('jpeg', 'jpg') || 'bin';
+    const name = `${randomUUID()}.${ext}`;
+    writeFileSync(`${UPLOAD_DIR}/${name}`, Buffer.from(response.data));
+    const localUrl = `https://${env.APP_HOST}:${env.APP_PORT}/api/conversations/media/${name}`;
+    return { url: localUrl, content_type: contentType };
+  } catch (err) {
+    console.error('[Media] Failed to download:', remoteUrl, err.message);
+    return { url: remoteUrl, content_type: contentType };
+  }
+}
+
+router.post('/upload-media', async (req, res) => {
+  const { data, filename, content_type } = req.body;
+  if (!data) return res.status(400).json({ error: 'No data provided' });
 
   try {
-    // Send message via Telnyx
-    const normalizedDestinationNumber = normalizePhoneNumber(dstNum);
-
-    await axios.post('https://api.telnyx.com/v2/messages', {
-      from: fromPhoneNumber,
-      to: normalizedDestinationNumber,
-      text: messageBody,
-    }, {
-      headers: { 'Authorization': `Bearer ${process.env.TELNYX_API}` }
-    });
-    console.log('Message composed and sent.');
-
-    // Find or create conversation
-    const conversation_id = getConversationId(normalizedDestinationNumber);
-
-    let conversation = await req.prisma.conversation.findUnique({
-      where: { conversation_id: conversation_id }
-    });
-
-    if (!conversation) {
-      conversation = await req.prisma.conversation.create({
-        data: {
-          id: uuidv4(),
-          conversation_id: conversation_id,
-          from_number: normalizedDestinationNumber,
-          to_number: fromPhoneNumber,
-          agent_assigned: agentUsername || null,
-          assigned: agentUsername ? true : false,
-          tag: null
-        }
-      });
-      console.log(`New conversation created and assigned to: ${agentUsername}`);
-    } else if (!conversation.agent_assigned && agentUsername) {
-      conversation = await req.prisma.conversation.update({
-        where: { conversation_id: conversation_id },
-        data: {
-          agent_assigned: agentUsername,
-          assigned: true,
-          to_number: fromPhoneNumber
-        }
-      });
-      console.log(`Existing conversation assigned to: ${agentUsername}`);
-    }
-
-    if (conversation) {
-      const nowIso = new Date().toISOString();
-      // Agent just sent a message, ensure the conversation is marked as read for them
-      await req.prisma.$executeRaw`
-        UPDATE Conversations
-        SET last_read_at = ${nowIso}
-        WHERE conversation_id = ${conversation.conversation_id}
-      `;
-    }
-
-    res.status(200).json({ success: true });
+    const ext = (filename || 'file').split('.').pop() || 'bin';
+    const name = `${randomUUID()}.${ext}`;
+    const base64 = data.replace(/^data:[^;]+;base64,/, '');
+    writeFileSync(`${UPLOAD_DIR}/${name}`, base64, 'base64');
+    const url = `https://${env.APP_HOST}:${env.APP_PORT}/api/conversations/media/${name}`;
+    res.json({ url, filename: name, content_type });
   } catch (err) {
-    console.error('Error sending composed message:', err.response?.data || err.message);
-    res.status(500).json({ success: false, error: err.message });
+    console.error('Upload error:', err.message);
+    res.status(500).json({ error: 'Upload failed' });
   }
 });
 
-// Webhook for incoming messages
+router.get('/media/:filename', (req, res) => {
+  const filePath = `${UPLOAD_DIR}/${req.params.filename}`;
+  if (!existsSync(filePath)) return res.status(404).send('Not found');
+  res.sendFile(filePath);
+});
+
+// ========================= COMPOSE MESSAGE =========================
+
+router.post('/composeMessage', async (req, res) => {
+  const fromPhoneNumber = req.body.From;
+  const messageBody = req.body.Text;
+  const dstNum = req.body.To;
+  const mediaUrls = req.body.MediaUrls || [];
+
+  if (!fromPhoneNumber || !dstNum) {
+    return res.status(400).json({ error: 'From and To are required' });
+  }
+  if (!messageBody && mediaUrls.length === 0) {
+    return res.status(400).json({ error: 'Text or media is required' });
+  }
+
+  if (!isValidE164(dstNum)) {
+    return res.status(400).json({ error: 'Invalid destination number. Must be E.164 format (e.g. +12125551234)' });
+  }
+
+  // Ensure conversation exists so optimistic message can be stored immediately
+  const phone_number_array = [fromPhoneNumber, dstNum];
+  const conversation_id = hash(phone_number_array);
+
+  let conversation = await Conversations.findOne({ where: { conversation_id } });
+  if (!conversation) {
+    conversation = await Conversations.create({
+      id: uuidv4(),
+      conversation_id,
+      from_number: fromPhoneNumber,
+      to_number: dstNum,
+      agent_assigned: req.body.agent || null,
+      assigned: !!req.body.agent,
+      tag: null,
+    });
+    broadcast('NEW_CONVERSATION', conversation);
+  }
+
+  // Create an optimistic message record with status "sending"
+  const messageId = uuidv4();
+  const messageType = mediaUrls.length > 0 ? 'MMS' : 'SMS';
+  const optimisticMessage = await Messages.create({
+    id: messageId,
+    direction: 'outbound',
+    type: messageType,
+    telnyx_number: fromPhoneNumber,
+    destination_number: dstNum,
+    text_body: messageBody || '',
+    media: mediaUrls.length > 0 ? JSON.stringify(mediaUrls.map((u) => ({ url: u, content_type: 'image/jpeg' }))) : null,
+    tag: null,
+    status: 'sending',
+    conversation_id: conversation.conversation_id,
+  });
+
+  // Update conversation last_message
+  await Conversations.update(
+    { last_message: messageBody },
+    { where: { conversation_id: conversation.conversation_id } }
+  );
+
+  // Broadcast optimistic message so UI updates instantly
+  broadcast('NEW_MESSAGE', {
+    ...optimisticMessage.get({ plain: true }),
+    isAssigned: conversation.assigned,
+    assignedAgent: conversation.agent_assigned,
+  });
+
+  try {
+    const sendBody = {
+      from: fromPhoneNumber,
+      to: dstNum,
+      text: messageBody || '',
+    };
+    if (mediaUrls.length > 0) {
+      sendBody.media_urls = mediaUrls;
+      sendBody.type = 'MMS';
+    }
+    const telnyxResponse = await telnyx.messages.send(sendBody);
+
+    const telnyxMessageId = telnyxResponse?.data?.id || null;
+
+    // Update message with Telnyx ID and status "sent"
+    await Messages.update(
+      { telnyx_message_id: telnyxMessageId, status: 'sent' },
+      { where: { id: messageId } }
+    );
+
+    // Broadcast status update
+    broadcast('MESSAGE_STATUS_UPDATE', {
+      id: messageId,
+      conversation_id: conversation.conversation_id,
+      status: 'sent',
+      telnyx_message_id: telnyxMessageId,
+    });
+
+    res.json({
+      success: true,
+      message: optimisticMessage.get({ plain: true }),
+      telnyx_message_id: telnyxMessageId,
+      status: 'sent',
+    });
+  } catch (err) {
+    console.error('Error sending message:', err.raw?.errors || err.message);
+
+    // Update status to failed
+    await Messages.update(
+      { status: 'failed' },
+      { where: { id: messageId } }
+    );
+
+    broadcast('MESSAGE_STATUS_UPDATE', {
+      id: messageId,
+      conversation_id: conversation.conversation_id,
+      status: 'failed',
+    });
+
+    res.status(500).json({
+      error: 'Failed to send message',
+      details: err.raw?.errors || err.message,
+      messageId,
+      status: 'failed',
+    });
+  }
+});
+
+// ========================= WEBHOOK =========================
+
 router.post('/webhook', async (req, res) => {
   const payload = req.body.data.payload;
   const event_type = req.body.data.event_type;
 
+  // --- Inbound message ---
   if (payload.direction === 'inbound' && event_type === 'message.received') {
-    const fromPhoneNumber = normalizePhoneNumber(payload.from.phone_number);
-    const toPhoneNumber = normalizePhoneNumber(payload.to[0].phone_number);
+    const fromPhoneNumber = payload.from.phone_number;
+    const toPhoneNumber = payload.to[0].phone_number;
     const messageText = payload.text;
     const messageType = payload.type;
     const tags = payload.tags.length > 0 ? payload.tags[0] : null;
 
-    const conversation_id = getConversationId(fromPhoneNumber);
+    const phone_number_array = [fromPhoneNumber, toPhoneNumber];
+    const conversation_id = hash(phone_number_array);
 
-    let conversation = await req.prisma.conversation.findUnique({
-      where: { conversation_id: conversation_id }
+    let conversation = await Conversations.findOne({
+      where: { conversation_id }
     });
 
     if (!conversation) {
-      const newConversation = await req.prisma.conversation.create({
-        data: {
-          id: uuidv4(),
-          conversation_id: conversation_id,
-          from_number: fromPhoneNumber,
-          to_number: toPhoneNumber,
-          agent_assigned: null,
-          assigned: false,
-          tag: tags
-        }
+      conversation = await Conversations.create({
+        id: uuidv4(),
+        conversation_id,
+        from_number: toPhoneNumber,
+        to_number: fromPhoneNumber,
+        agent_assigned: null,
+        assigned: false,
+        tag: tags
       });
-      broadcast('NEW_CONVERSATION', newConversation, req.env);
-      conversation = newConversation;
-    } else {
-      console.log("Conversation already exists. Skipping create operation.");
+      broadcast('NEW_CONVERSATION', conversation);
     }
 
-    // Store the message
-    let newMessage;
-    try {
-      newMessage = await req.prisma.message.create({
-        data: {
-          id: payload.id,
-          direction: 'inbound',
-          type: messageType,
-          telnyx_number: toPhoneNumber,
-          destination_number: fromPhoneNumber,
-          text_body: messageText,
-          tag: tags,
-          conversation_id: conversation.conversation_id
-        }
-      });
-    } catch (createError) {
-      if (createError.code === 'P2002') {
-        console.log('Duplicate inbound message detected, skipping broadcast:', payload.id);
-        res.status(200).json({ status: 'ok', duplicate: true });
-        return;
-      }
-      throw createError;
+    // Download and store MMS media locally
+    const rawMedia = payload.media || [];
+    const mediaUrls = [];
+    for (const m of rawMedia) {
+      const stored = await downloadAndStore(m.url, m.content_type);
+      mediaUrls.push(stored);
     }
+
+    const newMessage = await Messages.create({
+      id: uuidv4(),
+      direction: 'inbound',
+      type: messageType,
+      telnyx_number: toPhoneNumber,
+      destination_number: fromPhoneNumber,
+      text_body: messageText,
+      media: mediaUrls.length > 0 ? JSON.stringify(mediaUrls) : null,
+      tag: tags,
+      status: 'delivered',
+      telnyx_message_id: payload.id || null,
+      conversation_id: conversation.conversation_id
+    });
 
     broadcast('NEW_MESSAGE', {
-      ...newMessage,
+      ...newMessage.get({ plain: true }),
       isAssigned: conversation.assigned,
       assignedAgent: conversation.agent_assigned
-    }, req.env);
-
-    console.log(conversation.assigned);
-
-    // Update conversation metadata to reflect the latest inbound message
-    const inboundTimestamp = new Date().toISOString();
-    await req.prisma.$executeRaw`
-      UPDATE Conversations
-      SET last_message = ${messageText},
-          updatedAt = ${inboundTimestamp}
-      WHERE conversation_id = ${conversation.conversation_id}
-    `;
-  }
-
-  // Handle finalized outbound messages
-  if (payload.direction === 'outbound' && event_type === 'message.finalized') {
-    const fromPhoneNumber = normalizePhoneNumber(payload.from.phone_number);
-    const toPhoneNumber = normalizePhoneNumber(payload.to[0].phone_number);
-    const messageText = payload.text;
-    const messageType = payload.type;
-    const messageId = payload.id;
-    const tags = payload.tags.length > 0 ? payload.tags[0] : null;
-
-    const conversation_id = getConversationId(toPhoneNumber);
-
-    let conversation = await req.prisma.conversation.findUnique({
-      where: { conversation_id: conversation_id }
     });
 
-    if (!conversation) {
-      const newConversation = await req.prisma.conversation.create({
-        data: {
-          id: uuidv4(),
-          conversation_id: conversation_id,
-          from_number: toPhoneNumber,
-          to_number: fromPhoneNumber,
-          agent_assigned: null,
-          assigned: false,
-          tag: tags
-        }
-      });
-      broadcast('NEW_CONVERSATION', newConversation, req.env);
-      conversation = newConversation;
-    } else {
-      console.log("Conversation already exists. Skipping create operation.");
+    await Conversations.update(
+      { last_message: messageText },
+      { where: { conversation_id: conversation.conversation_id } }
+    );
+  }
+
+  // --- Outbound delivery status updates ---
+  if (payload.direction === 'outbound') {
+    const telnyxMessageId = payload.id;
+
+    // Map Telnyx event types to our status values
+    let newStatus = null;
+    if (event_type === 'message.sent') {
+      newStatus = 'sent';
+    } else if (event_type === 'message.delivered') {
+      newStatus = 'delivered';
+    } else if (event_type === 'message.finalized' && payload.errors && payload.errors.length > 0) {
+      newStatus = 'failed';
+    } else if (event_type === 'message.finalized') {
+      newStatus = 'delivered';
     }
 
-    // Create message record
-    let newMessage;
-    try {
-      newMessage = await req.prisma.message.create({
-        data: {
-          id: messageId,
+    if (newStatus && telnyxMessageId) {
+      const message = await Messages.findOne({
+        where: { telnyx_message_id: telnyxMessageId }
+      });
+
+      if (message) {
+        // Don't downgrade, but 'failed' always overrides (terminal state)
+        const STATUS_RANK = { queued: 1, sending: 2, sent: 3, delivered: 4 };
+        const shouldUpdate = newStatus === 'failed' || (STATUS_RANK[newStatus] || 0) > (STATUS_RANK[message.status] || 0);
+        if (shouldUpdate) {
+          await Messages.update(
+            { status: newStatus },
+            { where: { id: message.id } }
+          );
+
+          broadcast('MESSAGE_STATUS_UPDATE', {
+            id: message.id,
+            conversation_id: message.conversation_id,
+            status: newStatus,
+            telnyx_message_id: telnyxMessageId,
+          });
+        }
+      } else if (event_type === 'message.finalized') {
+        const fromPhoneNumber = payload.from.phone_number;
+        const toPhoneNumber = payload.to[0].phone_number;
+        const messageText = payload.text;
+        const messageType = payload.type;
+        const tags = payload.tags && payload.tags.length > 0 ? payload.tags[0] : null;
+
+        const phone_number_array = [fromPhoneNumber, toPhoneNumber];
+        const conversation_id = hash(phone_number_array);
+
+        let conversation = await Conversations.findOne({ where: { conversation_id } });
+
+        if (!conversation) {
+          conversation = await Conversations.create({
+            id: uuidv4(),
+            conversation_id,
+            from_number: fromPhoneNumber,
+            to_number: toPhoneNumber,
+            agent_assigned: null,
+            assigned: false,
+            tag: tags
+          });
+          broadcast('NEW_CONVERSATION', conversation);
+        }
+
+        const newMessage = await Messages.create({
+          id: uuidv4(),
           type: messageType,
           direction: 'outbound',
           telnyx_number: fromPhoneNumber,
           destination_number: toPhoneNumber,
           text_body: messageText,
           tag: tags,
+          status: newStatus,
+          telnyx_message_id: telnyxMessageId,
           conversation_id: conversation.conversation_id
-        }
-      });
-    } catch (createError) {
-      if (createError.code === 'P2002') {
-        console.log('Duplicate outbound message detected, skipping broadcast:', messageId);
-        res.status(200).json({ status: 'ok', duplicate: true });
-        return;
-      }
-      throw createError;
-    }
-    broadcast('NEW_MESSAGE', newMessage, req.env);
+        });
 
-    // Update the last message and mark the outbound update as read for the agent
-    const outboundTimestamp = new Date().toISOString();
-    await req.prisma.$executeRaw`
-      UPDATE Conversations
-      SET last_message = ${messageText},
-          last_read_at = ${outboundTimestamp},
-          updatedAt = ${outboundTimestamp}
-      WHERE conversation_id = ${conversation.conversation_id}
-    `;
+        broadcast('NEW_MESSAGE', newMessage);
+
+        await Conversations.update(
+          { last_message: messageText },
+          { where: { conversation_id: conversation.conversation_id } }
+        );
+      }
+    }
   }
 
   res.json({ status: "ok" });
 });
 
+// ========================= CONVERSATION QUERIES =========================
+
 router.get('/unassignedConversations', async (req, res) => {
   try {
-    console.log('Fetching unassigned conversations from database...');
-    const conversations = await req.prisma.conversation.findMany({
-      where: {
-        agent_assigned: null,
-      },
+    const conversations = await Conversations.findAll({
+      where: { agent_assigned: null },
     });
-    console.log('Found unassigned conversations:', conversations.length);
-    console.log('Conversations data:', JSON.stringify(conversations, null, 2));
     res.json(conversations);
   } catch (err) {
-    console.error('Error in unassignedConversations:', err);
+    console.error(err);
     res.status(500).send('Server Error');
   }
 });
 
 router.post('/assignAgent', async (req, res) => {
   const { conversation_id, user } = req.body;
-
-  console.log('👤 [assignAgent] Assigning conversation:', conversation_id, 'to agent:', user);
-
   if (!conversation_id) {
     return res.status(400).json({ message: 'Conversation ID is required' });
   }
 
   try {
-    const conversation = await req.prisma.conversation.findUnique({
+    const conversation = await Conversations.findOne({
       where: { conversation_id }
     });
 
     if (!conversation) {
-      console.log('❌ [assignAgent] Conversation not found');
       return res.status(404).json({ message: 'Conversation not found' });
     }
 
-    console.log('👤 [assignAgent] Before update:', {
-      agent_assigned: conversation.agent_assigned,
-      updatedAt: conversation.updatedAt,
-      last_read_at: conversation.last_read_at
+    await conversation.update({
+      agent_assigned: user,
+      assigned: true
     });
 
-    // Update without modifying updatedAt
-    const updatedConversation = await req.prisma.$executeRaw`
-      UPDATE Conversations
-      SET agent_assigned = ${user}, assigned = 1
-      WHERE conversation_id = ${conversation_id}
-    `;
-
-    const finalConversation = await req.prisma.conversation.findUnique({
-      where: { conversation_id }
-    });
-
-    console.log('👤 [assignAgent] After update:', {
-      agent_assigned: finalConversation.agent_assigned,
-      updatedAt: finalConversation.updatedAt,
-      last_read_at: finalConversation.last_read_at
-    });
-
-    res.json({ message: 'Successfully assigned', conversation: finalConversation });
+    broadcast('CONVERSATION_ASSIGNED', conversation);
+    res.json({ message: 'Successfully assigned', conversation });
   } catch (error) {
-    console.error('❌ [assignAgent] Error:', error);
-    res.status(500).send('Server Error');
-  }
-});
-
-// Mark conversation as read
-router.post('/markAsRead', async (req, res) => {
-  const { conversation_id } = req.body;
-
-  console.log('📖 [markAsRead] Request received');
-  console.log('📖 [markAsRead] conversation_id:', conversation_id);
-
-  if (!conversation_id) {
-    console.log('❌ [markAsRead] No conversation_id provided');
-    return res.status(400).json({ message: 'conversation_id is required' });
-  }
-
-  try {
-    const conversation = await req.prisma.conversation.findUnique({
-      where: { conversation_id }
-    });
-
-    console.log('📖 [markAsRead] Conversation found:', !!conversation);
-
-    if (!conversation) {
-      console.log('❌ [markAsRead] Conversation not found');
-      return res.status(404).json({ message: 'Conversation not found' });
-    }
-
-    console.log('📖 [markAsRead] Before update:');
-    console.log('  - updatedAt:', conversation.updatedAt);
-    console.log('  - last_read_at:', conversation.last_read_at);
-
-    // Update last_read_at without changing updatedAt using raw SQL
-    const nowIso = new Date().toISOString();
-    await req.prisma.$executeRaw`
-      UPDATE Conversations
-      SET last_read_at = ${nowIso}
-      WHERE conversation_id = ${conversation_id}
-    `;
-
-    const updatedConversation = await req.prisma.conversation.findUnique({
-      where: { conversation_id }
-    });
-
-    console.log('📖 [markAsRead] After update:');
-    console.log('  - updatedAt:', updatedConversation.updatedAt);
-    console.log('  - last_read_at:', updatedConversation.last_read_at);
-    console.log('✅ [markAsRead] Conversation marked as read successfully');
-
-    res.json({ success: true, conversation: updatedConversation });
-  } catch (err) {
-    console.error('❌ [markAsRead] Error:', err);
+    console.error(error);
     res.status(500).send('Server Error');
   }
 });
 
 router.get('/conversationMessages/:conversation_id', async (req, res) => {
   try {
-    const messages = await req.prisma.message.findMany({
+    const messages = await Messages.findAll({
       where: {
         conversation_id: req.params.conversation_id,
       },
-      orderBy: {
-        createdAt: 'asc',
-      },
+      order: [['createdAt', 'ASC']],
     });
     res.json(messages);
   } catch (err) {
@@ -395,10 +409,11 @@ router.get('/conversationMessages/:conversation_id', async (req, res) => {
 
 router.get('/assignedTo/:agentUsername', async (req, res) => {
   try {
-    const assignedConversations = await req.prisma.conversation.findMany({
+    const assignedConversations = await Conversations.findAll({
       where: {
         agent_assigned: req.params.agentUsername
       },
+      order: [['updatedAt', 'DESC']],
     });
     res.json(assignedConversations);
   } catch (err) {
@@ -407,15 +422,5 @@ router.get('/assignedTo/:agentUsername', async (req, res) => {
   }
 });
 
-// Debug logging endpoint
-router.post('/debug/log', (req, res) => {
-  const { message, data, timestamp } = req.body;
-  console.log(`\n🌐 [FRONTEND LOG] ${timestamp || new Date().toISOString()}`);
-  console.log(`   ${message}`);
-  if (data) {
-    console.log('   Data:', JSON.stringify(data, null, 2));
-  }
-  res.status(200).json({ received: true });
-});
 
 export default router;

@@ -2,21 +2,21 @@
 import 'dotenv/config';
 import { Sequelize } from 'sequelize';
 
-// Use SQLite for development, MySQL for production
-const sequelize = process.env.NODE_ENV === 'production' 
-  ? new Sequelize({
-      host: process.env.DB_HOST,
-      username: process.env.DB_USER,
-      password: process.env.DB_PASSWORD,
-      database: process.env.DB_NAME,
-      dialect: 'mysql',
-      logging: false
-    })
-  : new Sequelize({
-      dialect: 'sqlite',
-      storage: './database.sqlite',
-      logging: false
-    });
+const sequelize = new Sequelize({
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT || 5432,
+  username: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  dialect: 'postgres',
+  logging: false,
+  pool: {
+    min: 5,
+    max: 30,
+    acquire: 30000,
+    idle: 10000
+  },
+});
 
 // Test connection
 sequelize.authenticate()
@@ -26,8 +26,5 @@ sequelize.authenticate()
   .catch(err => {
     console.error('Unable to connect to the database:', err);
   });
-
-// Create tables if they don't exist (removed auto-sync from config)
-// Tables will be synced when server starts
 
 export default sequelize;

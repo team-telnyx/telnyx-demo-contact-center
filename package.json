@@ -1,27 +1,33 @@
 {
     "name": "contact-center-v2-demo",
     "version": "1.0.0",
+    "private": true,
+    "workspaces": [
+        "client",
+        "server",
+        "shared"
+    ],
     "scripts": {
-        "client": "cd client && npm run dev",
+        "client": "cd client && npm start",
         "server": "cd server && npm start",
-        "server:dev": "cd server && npm start",
-        "dev": "concurrently \"npm run server:dev\" \"npm run client\"",
-        "start": "concurrently \"npm run server:dev\" \"npm run client\""
+        "start": "concurrently \"npm run server\" \"npm run client\"",
+        "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+        "dev:client": "cd client && npm run dev",
+        "dev:server": "cd server && npm run dev",
+        "build": "npm run build:shared && npm run build:client && npm run build:server",
+        "build:client": "cd client && npm run build",
+        "build:server": "cd server && npm run build",
+        "build:shared": "cd shared && npm run build"
     },
     "devDependencies": {
         "concurrently": "^6.5.1"
     },
     "dependencies": {
-        "@anthropic-ai/sdk": "^0.60.0",
+        "@telnyx/webrtc": "^2.14.0",
         "axios": "^1.6.0",
-        "bcryptjs": "^3.0.2",
-        "cors": "^2.8.5",
         "crypto": "^1.0.1",
-        "dotenv": "^17.2.1",
-        "jsonwebtoken": "^9.0.2",
-        "node": "^20.19.4",
-        "sequelize": "^6.37.7",
-        "telnyx": "^1.25.5",
+        "telnyx": "^6.22.1",
+        "uuid": "^13.0.0",
         "ws": "^8.13.0"
     }
 }

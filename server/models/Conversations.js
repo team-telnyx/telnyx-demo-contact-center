@@ -1,6 +1,6 @@
 import { DataTypes, Model } from 'sequelize';
 import sequelize from '../config/database.js';
-import Messages from './Messages'; // Path to the Messages model
+import Messages from './Messages.js';
 
 class Conversations extends Model {}
 
@@ -16,11 +16,11 @@ Conversations.init({
     unique: true,
   },
   from_number: {
-    type: DataTypes.STRING(15),
+    type: DataTypes.STRING(20),
     allowNull: true,
   },
   to_number: {
-    type: DataTypes.STRING(15),
+    type: DataTypes.STRING(20),
     allowNull: true,
   },
   agent_assigned: {
@@ -37,10 +37,6 @@ Conversations.init({
   },
   last_message: {
     type: DataTypes.STRING(1024),
-    allowNull: true,
-  },
-  last_read_at: {
-    type: DataTypes.DATE,
     allowNull: true,
   }
 }, {

@@ -1,2 +1,61 @@
-node_modules
+# Dependencies
+node_modules/
+
+# Environment
 .env
+.env.local
+.env.*.local
+server/.env
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dev-debug.log
+
+# Next.js
+client/.next/
+client/out/
+
+# Build
+dist/
+build/
+shared/dist/
+
+# IDE
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo
+*.sw?
+
+# OS
+.DS_Store
+Thumbs.db
+
+# TypeScript
+*.tsbuildinfo
+
+# Debug
+# (covered above in Logs section)
+
+# Task files
+# tasks.json
+# tasks/
+client/certs/
+client/.env.local
+
+# Uploads
+server/uploads/
+uploads/
+
+# Claude / Task Master
+.claude/
+.taskmaster/
+.mcp.json

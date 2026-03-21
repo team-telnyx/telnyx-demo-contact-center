@@ -3,46 +3,47 @@
   "version": "1.0.0",
   "description": "",
   "type": "module",
-  "imports": {
-    "#lib/router-shim": {
-      "node": "express",
-      "default": "./lib/router-shim.js"
-    }
-  },
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "start": "node server.js",
-    "postinstall": "patch-package",
-    "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev",
-    "prisma:studio": "prisma studio",
-    "prisma:push": "prisma db push"
+    "dev": "tsx watch server.js",
+    "build": "tsc",
+    "start:prod": "node dist/server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@prisma/adapter-d1": "^5.22.0",
-    "@prisma/client": "^5.22.0",
-    "axios": "^1.11.0",
     "bcryptjs": "^2.4.3",
     "body-parser": "^1.20.2",
     "cors": "^2.8.5",
     "crypto": "^1.0.1",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
     "express-session": "^1.17.3",
+    "google-auth-library": "^10.6.2",
+    "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.1",
-    "mysql2": "^3.6.0",
+    "pg": "^8.20.0",
+    "pg-hstore": "^2.3.4",
+    "pino": "^8.17.2",
     "sequelize": "^6.32.1",
-    "socket.io": "^4.8.1",
-    "sqlite3": "^5.1.6",
-    "telnyx": "^2.0.1"
+    "socket.io": "^4.7.2",
+    "zod": "^3.22.4"
   },
   "devDependencies": {
-    "esbuild": "^0.25.11",
-    "patch-package": "^8.0.1",
-    "prisma": "^5.22.0"
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/express-session": "^1.18.0",
+    "@types/jsonwebtoken": "^9.0.5",
+    "@types/node": "^20.11.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.0"
   }
 }

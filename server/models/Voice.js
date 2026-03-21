@@ -1,10 +1,9 @@
 import { DataTypes, Model } from 'sequelize';
-import sequelize from '../config/database.js'; // Make sure this path is correct
+import sequelize from '../config/database.js';
 
 class Voice extends Model {}
 
 Voice.init({
-  // Define the schema here
   uuid: {
     type: DataTypes.UUID,
     defaultValue: DataTypes.UUIDV4,
@@ -28,11 +27,11 @@ Voice.init({
   },
   accept_agent: {
     type: DataTypes.STRING,
-    allowNull: true // Assuming that this can be null
+    allowNull: true
   },
   transfer_agent: {
     type: DataTypes.STRING,
-    allowNull: true 
+    allowNull: true
   },
   bridge_uuid: {
     type: DataTypes.STRING,
@@ -42,26 +41,24 @@ Voice.init({
     type: DataTypes.STRING,
     allowNull: true
   },
-  supervisor_call_id: {
+  conference_id: {
     type: DataTypes.STRING,
     allowNull: true
   },
-  status: {
-    type: DataTypes.STRING,
+  tried_agents: {
+    type: DataTypes.TEXT,
     allowNull: true,
-    defaultValue: 'queued'
-  },
-  transfer_status: {
-    type: DataTypes.ENUM('warm_initiated', 'warm_connected', 'completed'),
-    allowNull: true
+    get() {
+      const raw = this.getDataValue('tried_agents');
+      return raw ? JSON.parse(raw) : [];
+    },
+    set(val) {
+      this.setDataValue('tried_agents', JSON.stringify(val || []));
+    },
   },
 }, {
-  // Other model options go here
-  sequelize, // We need to pass the connection instance
-  modelName: 'Voice', // We need to choose the model name
+  sequelize,
+  modelName: 'Voice',
 });
-
-// If you don't have a table created, you can use this to create it based on your model
-// Voice.sync({ force: true }); // This will forcefully create the table and drop it first if it already exists
 
 export default Voice;

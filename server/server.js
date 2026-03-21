@@ -1,96 +1,128 @@
-// Import required modules
-import 'dotenv/config';
+// Import required modules and config
+import fs from 'fs';
 import http from 'http';
 import https from 'https';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-// Import the configured Express app from app.js
-import app from './app.js';
+import express from 'express';
+import session from 'express-session';
+import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import bodyParser from 'body-parser';
+import { env } from './src/config/env.js';
+import sequelize from './config/database.js';
+import userRoutes from './routes/userRoutes.js';
+import voiceRoutes from './routes/voiceRoutes.js';
+import conversationRoutes from './routes/conversationRoutes.js';
+import ivrRoutes from './routes/ivrRoutes.js';
+import seedDatabase from './seeds/seed.js';
 import { initWebSocket } from './routes/websocket.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Import all models so sync creates their tables
+import './models/CallRecord.js';
+import './models/IvrFlow.js';
+
+const app = express();
+app.set('trust proxy', 1);
 
 let server;
+const TLS_KEY_PATH = '/etc/letsencrypt/live/telnyx.solutions/privkey.pem';
+const TLS_CERT_PATH = '/etc/letsencrypt/live/telnyx.solutions/fullchain.pem';
 
-// Use HTTPS in production or development (with self-signed certs for dev)
-const useHTTPS = process.env.NODE_ENV === 'production' || process.env.ENABLE_HTTPS === 'true';
-
-if (useHTTPS) {
+if (fs.existsSync(TLS_KEY_PATH) && fs.existsSync(TLS_CERT_PATH)) {
   try {
-    let privateKey, certificate;
-
-    if (process.env.NODE_ENV === 'production' && process.env.SSL_PRIVATE_KEY_PATH && process.env.SSL_CERTIFICATE_PATH) {
-      // Production SSL certificates
-      privateKey = fs.readFileSync(process.env.SSL_PRIVATE_KEY_PATH, 'utf8');
-      certificate = fs.readFileSync(process.env.SSL_CERTIFICATE_PATH, 'utf8');
-    } else {
-      // Development self-signed certificates
-      // Try to resolve paths relative to current directory
-      const keyPath = path.resolve(__dirname, 'key.pem');
-      const certPath = path.resolve(__dirname, 'cert.pem');
-
-      if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
-        privateKey = fs.readFileSync(keyPath, 'utf8');
-        certificate = fs.readFileSync(certPath, 'utf8');
-      } else {
-        throw new Error('SSL certificates not found');
-      }
-    }
-
     const credentials = {
-      key: privateKey,
-      cert: certificate
+      key: fs.readFileSync(TLS_KEY_PATH, 'utf8'),
+      cert: fs.readFileSync(TLS_CERT_PATH, 'utf8'),
     };
-
     server = https.createServer(credentials, app);
-    console.log('Using HTTPS server');
-  } catch (error) {
-    console.warn(`SSL initialization failed: ${error.message}`);
-    console.warn('Falling back to HTTP server');
+    console.log('Starting with HTTPS');
+  } catch (err) {
+    console.warn('Could not read TLS certs, falling back to HTTP:', err.message);
     server = http.createServer(app);
   }
 } else {
+  console.log('TLS certs not found, starting with HTTP');
   server = http.createServer(app);
-  console.log('Using HTTP server for development');
 }
 
-// Initialize WebSocket
 initWebSocket(server);
 
-// Serve static files from React build (for production/ngrok access)
-const clientBuildPath = path.join(__dirname, '../client/build');
-if (fs.existsSync(clientBuildPath)) {
-  // Use express.static to serve files from the build directory
-  // Note: app.use is already defined in app.js, but we can add more middleware here
-  // However, since app is imported, we should probably add this logic inside app.js or 
-  // just handle it here if it's specific to the Node server entry point.
-  // Since app.js is shared with Workers, it's better to keep static file serving here?
-  // Actually, we can attach it to the app instance.
+// Security middleware
+app.use(helmet({
+  crossOriginOpenerPolicy: false,
+  crossOriginResourcePolicy: false,
+  crossOriginEmbedderPolicy: false,
+}));
 
-  // We need to import express to use express.static, but app is an express instance.
-  // Let's import express just for static middleware if needed, but app.use works on the instance.
-  // But wait, express.static is a function on the express module.
-  import('express').then(({ default: express }) => {
-    app.use(express.static(clientBuildPath));
-    console.log('Serving React app from:', clientBuildPath);
+// CORS configuration
+const corsOptions = {
+  origin: env.CORS_ORIGINS.includes('*') ? true : env.CORS_ORIGINS,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+};
+app.use(cors(corsOptions));
 
-    // Serve React app for all non-API routes (SPA support)
-    app.get('*', (req, res, next) => {
-      if (req.path.startsWith('/api')) {
-        return next();
-      }
-      res.sendFile(path.join(clientBuildPath, 'index.html'));
-    });
-  });
-}
+// Rate limiting
+const generalLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use('/api/', generalLimiter);
+
+const loginLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  message: { message: 'Too many login attempts, please try again later' },
+});
+app.use('/api/users/login', loginLimiter);
+
+const webhookLimiter = rateLimit({
+  windowMs: 1000,
+  max: 100,
+});
+app.use('/api/voice/webhook', webhookLimiter);
+app.use('/api/conversations/webhook', webhookLimiter);
+
+// Session setup
+app.use(
+  session({
+    secret: env.SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: { secure: true, httpOnly: true, sameSite: 'strict' },
+  })
+);
+
+// Body parser
+app.use(bodyParser.json({limit: '20mb'}));
+
+// User Routes
+app.use('/api/users', userRoutes);
+app.use('/api/conversations', conversationRoutes);
+app.use('/api/voice', voiceRoutes);
+app.use('/api/ivr', ivrRoutes);
 
 const PORT = process.env.PORT || 3000;
 
-// Start the server
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server is running on port ${PORT} and accessible from any IP address`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-});
+// Sync the database and then start the server
+const init = async () => {
+  try {
+    await sequelize.sync({ alter: true });
+    // Seed only if no users exist (first run)
+    const User = (await import('./models/User.js')).default;
+    const userCount = await User.count();
+    if (userCount === 0) {
+      await seedDatabase();
+    }
+    server.listen(PORT, () => {
+      console.log(`Server is running on port ${PORT}`);
+    });
+  } catch (err) {
+    console.error('Error initializing database:', err);
+  }
+};
+
+init();
