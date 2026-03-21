@@ -283,9 +283,10 @@ router.post('/webhook', async (req, res) => {
       });
 
       if (message) {
-        // Don't downgrade: delivered > sent > sending > queued
-        const STATUS_RANK = { failed: 0, queued: 1, sending: 2, sent: 3, delivered: 4 };
-        if ((STATUS_RANK[newStatus] || 0) > (STATUS_RANK[message.status] || 0)) {
+        // Don't downgrade, but 'failed' always overrides (terminal state)
+        const STATUS_RANK = { queued: 1, sending: 2, sent: 3, delivered: 4 };
+        const shouldUpdate = newStatus === 'failed' || (STATUS_RANK[newStatus] || 0) > (STATUS_RANK[message.status] || 0);
+        if (shouldUpdate) {
           await Messages.update(
             { status: newStatus },
             { where: { id: message.id } }

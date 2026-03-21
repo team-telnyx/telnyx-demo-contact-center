@@ -45,8 +45,11 @@ export async function routeCallToAgent(callControlId, excludeAgents = []) {
       from: fromNumber,
       webhook_url: webhookUrl,
     });
+    // Track this agent as tried
+    const triedSoFar = voiceRecord.tried_agents || [];
+    triedSoFar.push(availableAgent.sipUsername);
     await Voice.update(
-      { accept_agent: availableAgent.sipUsername },
+      { accept_agent: availableAgent.sipUsername, tried_agents: triedSoFar },
       { where: { queue_uuid: callControlId } }
     );
     console.log(`[Auto-route] Dialed agent ${availableAgent.sipUsername}`);
@@ -69,12 +72,15 @@ export async function routeToNextAgent(callControlId, declinedAgent) {
     return;
   }
 
-  // Collect all agents that have already been tried for this call
-  const triedAgents = [declinedAgent];
+  // Use the full persisted list of tried agents
+  const triedAgents = voiceRecord.tried_agents || [];
+  if (declinedAgent && !triedAgents.includes(declinedAgent)) {
+    triedAgents.push(declinedAgent);
+  }
 
-  // Reset accept_agent so the call is back in queue
+  // Reset accept_agent so the call is back in queue, persist tried list
   await Voice.update(
-    { accept_agent: null },
+    { accept_agent: null, tried_agents: triedAgents },
     { where: { queue_uuid: callControlId } }
   );
 

@@ -43,11 +43,19 @@ router.get('/', authenticate, async (req, res) => {
   }
 });
 
+// Helper: find flow and verify ownership
+async function findOwnedFlow(req, res) {
+  const flow = await IvrFlow.findByPk(req.params.id);
+  if (!flow) { res.status(404).json({ error: 'Flow not found' }); return null; }
+  if (flow.createdBy !== req.user.username) { res.status(403).json({ error: 'Access denied' }); return null; }
+  return flow;
+}
+
 // Get a single flow with full data
 router.get('/:id', authenticate, async (req, res) => {
   try {
-    const flow = await IvrFlow.findByPk(req.params.id);
-    if (!flow) return res.status(404).json({ error: 'Flow not found' });
+    const flow = await findOwnedFlow(req, res);
+    if (!flow) return;
     res.json(flow);
   } catch (err) {
     console.error('Error fetching IVR flow:', err.message);
@@ -81,8 +89,8 @@ router.post('/', authenticate, async (req, res) => {
 // Update an existing flow
 router.put('/:id', authenticate, async (req, res) => {
   try {
-    const flow = await IvrFlow.findByPk(req.params.id);
-    if (!flow) return res.status(404).json({ error: 'Flow not found' });
+    const flow = await findOwnedFlow(req, res);
+    if (!flow) return;
 
     const { name, description, flowData } = req.body;
     if (name) flow.name = name;
@@ -100,8 +108,8 @@ router.put('/:id', authenticate, async (req, res) => {
 // Delete a flow
 router.delete('/:id', authenticate, async (req, res) => {
   try {
-    const flow = await IvrFlow.findByPk(req.params.id);
-    if (!flow) return res.status(404).json({ error: 'Flow not found' });
+    const flow = await findOwnedFlow(req, res);
+    if (!flow) return;
     await flow.destroy();
     res.json({ message: 'Flow deleted' });
   } catch (err) {
@@ -116,8 +124,8 @@ router.post('/:id/publish', authenticate, async (req, res) => {
     const { phoneNumber } = req.body;
     if (!phoneNumber) return res.status(400).json({ error: 'phoneNumber is required' });
 
-    const flow = await IvrFlow.findByPk(req.params.id);
-    if (!flow) return res.status(404).json({ error: 'Flow not found' });
+    const flow = await findOwnedFlow(req, res);
+    if (!flow) return;
 
     // Deactivate all other flows on this number
     await IvrFlow.update(
@@ -140,8 +148,8 @@ router.post('/:id/publish', authenticate, async (req, res) => {
 // Unpublish/deactivate a flow
 router.post('/:id/unpublish', authenticate, async (req, res) => {
   try {
-    const flow = await IvrFlow.findByPk(req.params.id);
-    if (!flow) return res.status(404).json({ error: 'Flow not found' });
+    const flow = await findOwnedFlow(req, res);
+    if (!flow) return;
 
     flow.active = false;
     await flow.save();

@@ -106,12 +106,33 @@ router.get('/user_data/:username', async (req, res) => {
     const user = await User.findOne({ where: { username } });
 
     if (user) {
-      const { firstName, lastName, phoneNumber, status, avatar, telnyxApiKey, telnyxPublicKey, appConnectionId, webrtcConnectionId, onboardingComplete } = user;
       let base64Avatar = '';
-      if (avatar) {
-        base64Avatar = `data:image/jpeg;base64,${avatar.toString('base64')}`;
+      if (user.avatar) {
+        base64Avatar = `data:image/jpeg;base64,${user.avatar.toString('base64')}`;
       }
-      res.status(200).json({ avatar: base64Avatar, firstName, lastName, phoneNumber, status, telnyxApiKey: telnyxApiKey || null, telnyxPublicKey: telnyxPublicKey || null, appConnectionId: appConnectionId || null, webrtcConnectionId: webrtcConnectionId || null, onboardingComplete: !!onboardingComplete });
+      // Only return sensitive fields if the requester is the same user (authenticated)
+      const authHeader = req.headers.authorization;
+      const isSelf = authHeader && (() => {
+        try {
+          const decoded = jwt.verify(authHeader.split(' ')[1], env.JWT_SECRET);
+          return decoded.username === user.username;
+        } catch { return false; }
+      })();
+      const response = {
+        avatar: base64Avatar,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        phoneNumber: user.phoneNumber,
+        status: user.status,
+        onboardingComplete: !!user.onboardingComplete,
+      };
+      if (isSelf) {
+        response.telnyxApiKey = user.telnyxApiKey || null;
+        response.telnyxPublicKey = user.telnyxPublicKey || null;
+        response.appConnectionId = user.appConnectionId || null;
+        response.webrtcConnectionId = user.webrtcConnectionId || null;
+      }
+      res.status(200).json(response);
     } else {
       res.status(404).json("User not found");
     }

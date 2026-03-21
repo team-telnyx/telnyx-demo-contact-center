@@ -30,6 +30,16 @@ router.post('/webhook', express.json(), async (req, res) => {
         direction: data.payload.direction,
       }).catch((error) => console.error('Error saving call to database:', error));
 
+      // Create call history record
+      CallRecord.create({
+        telnyxCallControlId: callControlId,
+        direction: 'inbound',
+        fromNumber: data.payload.from,
+        toNumber: data.payload.to,
+        status: 'queued',
+        startedAt: new Date(),
+      }).catch((error) => console.error('Error creating call record:', error));
+
       // Check if there's an active IVR flow for the dialed number
       const telnyxNumber = data.payload.to;
       const session = await ivrEngine.startSession(callControlId, telnyxNumber);
@@ -44,6 +54,11 @@ router.post('/webhook', express.json(), async (req, res) => {
 
     // ── call.answered ──
     if (data.event_type === 'call.answered') {
+      CallRecord.update(
+        { status: 'active', answeredAt: new Date() },
+        { where: { telnyxCallControlId: callControlId } }
+      ).catch(() => {});
+
       if (ivrEngine.hasSession(callControlId)) {
         await ivrEngine.handleMediaEnded(callControlId);
       } else {
@@ -101,6 +116,18 @@ router.post('/webhook', express.json(), async (req, res) => {
     // ── call.hangup — Clean up IVR session and Voice record ──
     if (data.event_type === 'call.hangup') {
       ivrEngine.endSession(callControlId);
+
+      // Finalize call history record
+      const voiceRecord = await Voice.findOne({ where: { queue_uuid: callControlId } });
+      CallRecord.update(
+        {
+          status: data.payload.hangup_cause === 'normal_clearing' ? 'completed' : 'missed',
+          endedAt: new Date(),
+          agentUsername: voiceRecord?.accept_agent || null,
+          queueName: voiceRecord?.queue_name || null,
+        },
+        { where: { telnyxCallControlId: callControlId } }
+      ).catch(() => {});
       // Remove from queue records so auto-route doesn't pick up dead calls
       await Voice.destroy({
         where: { queue_uuid: callControlId }

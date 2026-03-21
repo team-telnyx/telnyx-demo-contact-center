@@ -45,6 +45,17 @@ Voice.init({
     type: DataTypes.STRING,
     allowNull: true
   },
+  tried_agents: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    get() {
+      const raw = this.getDataValue('tried_agents');
+      return raw ? JSON.parse(raw) : [];
+    },
+    set(val) {
+      this.setDataValue('tried_agents', JSON.stringify(val || []));
+    },
+  },
 }, {
   sequelize,
   modelName: 'Voice',
