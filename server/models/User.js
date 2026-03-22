@@ -71,10 +71,38 @@ User.init({
     allowNull: false,
     defaultValue: false,
   },
+  assignedQueue: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: 'General_Queue',
+  },
   routingPriority: {
     type: DataTypes.INTEGER,
     allowNull: false,
     defaultValue: 10,
+  },
+  role: {
+    type: DataTypes.ENUM('admin', 'agent'),
+    allowNull: false,
+    defaultValue: 'agent',
+  },
+  maxCalls: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 1,
+  },
+  maxConversations: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 5,
+  },
+  messagingProfileId: {
+    type: DataTypes.STRING,
+    allowNull: true,
+  },
+  outboundVoiceProfileId: {
+    type: DataTypes.STRING,
+    allowNull: true,
   }
 }, {
   sequelize,

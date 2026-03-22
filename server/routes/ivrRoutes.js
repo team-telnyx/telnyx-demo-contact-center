@@ -2,19 +2,63 @@ import express from 'express';
 import axios from 'axios';
 import { env } from '../src/config/env.js';
 import IvrFlow from '../models/IvrFlow.js';
+import Settings from '../models/Settings.js';
+import User from '../models/User.js';
 import { authenticate } from '../src/middleware/auth.js';
+import { getOrgTelnyxClient } from '../src/services/org-telnyx.js';
 
 const router = express.Router();
 
-// Get phone numbers assigned to the voice application
+// Get available TTS voices
+let cachedVoices = null;
+let voicesCachedAt = 0;
+const VOICES_CACHE_TTL = 3600000; // 1 hour
+
+router.get('/voices', authenticate, async (req, res) => {
+  try {
+    if (cachedVoices && Date.now() - voicesCachedAt < VOICES_CACHE_TTL) {
+      return res.json(cachedVoices);
+    }
+    const telnyx = await getOrgTelnyxClient();
+    const result = await telnyx.textToSpeech.listVoices();
+    const voices = result.voices || [];
+    // Group by provider, only include English voices + all providers
+    const grouped = {};
+    voices.forEach((v) => {
+      const provider = v.provider || 'other';
+      if (!grouped[provider]) grouped[provider] = [];
+      grouped[provider].push({
+        id: v.id,
+        name: v.name,
+        gender: v.gender,
+        language: v.language,
+      });
+    });
+    cachedVoices = grouped;
+    voicesCachedAt = Date.now();
+    res.json(grouped);
+  } catch (err) {
+    console.error('Error fetching voices:', err.message);
+    res.json({});
+  }
+});
+
+// Get phone numbers assigned to the agent's voice application
 router.get('/connection-numbers', authenticate, async (req, res) => {
   try {
+    const user = await User.findOne({ where: { username: req.user.username } });
+    if (!user?.appConnectionId) {
+      return res.json([]);
+    }
+
+    const apiKeySetting = await Settings.findByPk('orgTelnyxApiKey');
+    const apiKey = apiKeySetting?.value || process.env.TELNYX_API;
     const response = await axios.get('https://api.telnyx.com/v2/phone_numbers', {
       params: {
-        'filter[connection_id]': env.TELNYX_VOICE_APP_ID,
+        'filter[connection_id]': user.appConnectionId,
         'page[size]': 250,
       },
-      headers: { Authorization: `Bearer ${env.TELNYX_API}` },
+      headers: { Authorization: `Bearer ${apiKey}` },
     });
     const numbers = response.data.data.map((n) => ({
       id: n.id,
@@ -34,7 +78,7 @@ router.get('/', authenticate, async (req, res) => {
     const flows = await IvrFlow.findAll({
       where: { createdBy: req.user.username },
       order: [['updatedAt', 'DESC']],
-      attributes: ['id', 'name', 'description', 'phoneNumber', 'active', 'createdBy', 'createdAt', 'updatedAt'],
+      attributes: ['id', 'name', 'description', 'phoneNumber', 'active', 'hasDraft', 'publishedAt', 'createdBy', 'createdAt', 'updatedAt'],
     });
     res.json(flows);
   } catch (err) {
@@ -95,7 +139,13 @@ router.put('/:id', authenticate, async (req, res) => {
     const { name, description, flowData } = req.body;
     if (name) flow.name = name;
     if (description !== undefined) flow.description = description;
-    if (flowData) flow.flowData = flowData;
+    if (flowData) {
+      flow.flowData = flowData;
+      // Mark as having unpublished changes if flow is active
+      if (flow.active && flow.publishedFlowData) {
+        flow.hasDraft = true;
+      }
+    }
 
     await flow.save();
     res.json(flow);
@@ -118,7 +168,7 @@ router.delete('/:id', authenticate, async (req, res) => {
   }
 });
 
-// Publish/activate a flow for a phone number
+// Publish/activate a flow for a phone number — assigns number to agent's voice app
 router.post('/:id/publish', authenticate, async (req, res) => {
   try {
     const { phoneNumber } = req.body;
@@ -127,15 +177,40 @@ router.post('/:id/publish', authenticate, async (req, res) => {
     const flow = await findOwnedFlow(req, res);
     if (!flow) return;
 
+    const user = await User.findOne({ where: { username: req.user.username } });
+    if (!user?.appConnectionId) {
+      return res.status(400).json({ error: 'Your Voice App has not been provisioned. Contact an administrator.' });
+    }
+
+    // Assign the phone number to this agent's voice app via Telnyx API
+    try {
+      const telnyx = await getOrgTelnyxClient();
+      // Find the phone number resource by number
+      const numbersResp = await telnyx.phoneNumbers.list({ 'filter[phone_number]': phoneNumber });
+      const numberResource = numbersResp?.data?.[0];
+      if (numberResource) {
+        await telnyx.phoneNumbers.update(numberResource.id, {
+          connection_id: user.appConnectionId,
+        });
+        console.log(`[IVR] Assigned ${phoneNumber} to voice app ${user.appConnectionId} for ${req.user.username}`);
+      }
+    } catch (assignErr) {
+      console.error('[IVR] Failed to assign number to voice app:', assignErr.message);
+      return res.status(400).json({ error: `Failed to assign phone number to your Voice App: ${assignErr.raw?.errors?.[0]?.detail || assignErr.message}` });
+    }
+
     // Deactivate all other flows on this number
     await IvrFlow.update(
       { active: false },
       { where: { phoneNumber, active: true } }
     );
 
-    // Activate this flow
+    // Activate and publish — copy draft to published
     flow.phoneNumber = phoneNumber;
     flow.active = true;
+    flow.publishedFlowData = flow.flowData;
+    flow.hasDraft = false;
+    flow.publishedAt = new Date();
     await flow.save();
 
     res.json({ message: `Flow "${flow.name}" published to ${phoneNumber}`, flow });
@@ -145,13 +220,32 @@ router.post('/:id/publish', authenticate, async (req, res) => {
   }
 });
 
-// Unpublish/deactivate a flow
+// Unpublish/deactivate a flow — unassigns number from agent's voice app
 router.post('/:id/unpublish', authenticate, async (req, res) => {
   try {
     const flow = await findOwnedFlow(req, res);
     if (!flow) return;
 
+    // Unassign the phone number from the voice app
+    if (flow.phoneNumber) {
+      try {
+        const telnyx = await getOrgTelnyxClient();
+        const numbersResp = await telnyx.phoneNumbers.list({ 'filter[phone_number]': flow.phoneNumber });
+        const numberResource = numbersResp?.data?.[0];
+        if (numberResource) {
+          await telnyx.phoneNumbers.update(numberResource.id, { connection_id: '' });
+          console.log(`[IVR] Unassigned ${flow.phoneNumber} from voice app`);
+        }
+      } catch (unassignErr) {
+        console.error('[IVR] Failed to unassign number:', unassignErr.message);
+      }
+    }
+
     flow.active = false;
+    flow.publishedFlowData = null;
+    flow.hasDraft = false;
+    flow.publishedAt = null;
+    flow.phoneNumber = null;
     await flow.save();
 
     res.json({ message: 'Flow unpublished', flow });

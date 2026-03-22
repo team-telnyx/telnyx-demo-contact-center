@@ -1,8 +1,5 @@
-import { env } from '../config/env.js';
-import Telnyx from 'telnyx';
+import { getOrgTelnyxClient } from './org-telnyx.js';
 import IvrFlow from '../../models/IvrFlow.js';
-
-const telnyx = new Telnyx({ apiKey: env.TELNYX_API });
 
 // In-memory session tracking: callControlId → session
 const ivrSessions = new Map();
@@ -29,7 +26,8 @@ async function startSession(callControlId, phoneNumber) {
   const flow = await getActiveFlow(phoneNumber);
   if (!flow) return null;
 
-  const flowData = flow.flowData;
+  // Use published version for execution, fall back to draft
+  const flowData = flow.publishedFlowData || flow.flowData;
   if (!flowData?.nodes) return null;
 
   const entryNode = flowData.nodes.find((n) => n.type === 'incomingCall');
@@ -126,7 +124,24 @@ async function autoAdvance(session, nodeId, callControlId) {
   }
 }
 
+// Helper: strip empty/default values so only explicitly configured params are sent to the API
+function clean(obj) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === undefined || v === null || v === '' || v === 0 || v === false) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+// Helper: resolve voice param — provider voice IDs go as 'voice' (provider format), simple goes as 'voice'
+function resolveVoice(voice) {
+  if (!voice || voice === 'female' || voice === 'male') return { voice: voice || 'female' };
+  return { voice: voice }; // Provider format like AWS.Polly.Joanna-Neural
+}
+
 async function executeNode(session, nodeId, ccid) {
+  const telnyx = await getOrgTelnyxClient();
   const node = getNode(session.flowData, nodeId);
   if (!node) return;
 
@@ -136,58 +151,121 @@ async function executeNode(session, nodeId, ccid) {
   try {
     switch (node.type) {
       // ── Core Call Control ──
-      case 'answer':
-        await telnyx.calls.actions.answer(ccid);
+      case 'answer': {
+        const answerBody = {};
+        if (d.clientState) answerBody.client_state = Buffer.from(d.clientState).toString('base64');
+        if (d.preferredCodecs) answerBody.preferred_codecs = d.preferredCodecs;
+        if (d.record === 'record-from-answer' || d.record === 'record-from-ringing') answerBody.record = d.record;
+        if (answerBody.record) {
+          if (d.recordFormat) answerBody.record_format = d.recordFormat;
+          if (d.recordChannels) answerBody.record_channels = d.recordChannels;
+          if (d.recordMaxLength && parseInt(d.recordMaxLength) > 0) answerBody.record_max_length = parseInt(d.recordMaxLength);
+          if (d.recordTimeoutSecs && parseInt(d.recordTimeoutSecs) > 0) answerBody.record_timeout_secs = parseInt(d.recordTimeoutSecs);
+          if (d.recordTrack && d.recordTrack !== 'both') answerBody.record_track = d.recordTrack;
+          if (d.recordTrim) answerBody.record_trim = d.recordTrim;
+          if (d.recordCustomFileName) answerBody.record_custom_file_name = d.recordCustomFileName;
+        }
+        if (d.sendSilenceWhenIdle === true) answerBody.send_silence_when_idle = true;
+        if (d.streamUrl) {
+          answerBody.stream_url = d.streamUrl;
+          if (d.streamTrack) answerBody.stream_track = d.streamTrack;
+        }
+        if (d.webhookUrl) answerBody.webhook_url = d.webhookUrl;
+        await telnyx.calls.actions.answer(ccid, answerBody);
         break;
+      }
 
       case 'reject':
-        await telnyx.calls.actions.reject(ccid, { cause: d.cause || 'CALL_REJECTED' });
+        await telnyx.calls.actions.reject(ccid, clean({
+          cause: d.cause || 'CALL_REJECTED',
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         endSession(ccid);
         break;
 
       case 'hangup':
-        await telnyx.calls.actions.hangup(ccid);
+        await telnyx.calls.actions.hangup(ccid, clean({
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         endSession(ccid);
         break;
 
       case 'transfer':
-        await telnyx.calls.actions.transfer(ccid, { to: d.to, from: d.from || undefined });
+        await telnyx.calls.actions.transfer(ccid, clean({
+          to: d.to,
+          from: d.from || undefined,
+          from_display_name: d.fromDisplayName || undefined,
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+          webhook_url: d.webhookUrl || undefined,
+          timeout_secs: d.timeoutSecs ? parseInt(d.timeoutSecs) : undefined,
+          time_limit_secs: d.timeLimitSecs ? parseInt(d.timeLimitSecs) : undefined,
+          park_after_unbridge: d.parkAfterUnbridge || undefined,
+          sip_auth_username: d.sipAuthUsername || undefined,
+          sip_auth_password: d.sipAuthPassword || undefined,
+          record: d.record || undefined,
+          record_format: d.recordFormat || undefined,
+          record_channels: d.recordChannels || undefined,
+          record_track: d.recordTrack || undefined,
+          record_max_length: d.recordMaxLength ? parseInt(d.recordMaxLength) : undefined,
+          answering_machine_detection: d.answeringMachineDetection || undefined,
+          audio_url: d.audioUrl || undefined,
+        }));
         break;
 
       case 'bridge':
-        await telnyx.calls.actions.bridge(ccid, {
-          call_control_id_to_bridge_with: d.callControlId, park_after_unbridge: d.parkAfterUnbridge || 'self',
-        });
+        await telnyx.calls.actions.bridge(ccid, clean({
+          call_control_id_to_bridge_with: d.callControlId,
+          park_after_unbridge: d.parkAfterUnbridge || 'self',
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+          play_ringtone: d.playRingtone || undefined,
+          ringtone: d.ringtone || undefined,
+          hold_after_unbridge: d.holdAfterUnbridge || undefined,
+          mute_dtmf: d.muteDtmf !== 'none' ? d.muteDtmf : undefined,
+          prevent_double_bridge: d.preventDoubleBridge || undefined,
+          queue: d.queue || undefined,
+          record: d.record || undefined,
+          record_format: d.recordFormat || undefined,
+          record_channels: d.recordChannels || undefined,
+          record_track: d.recordTrack || undefined,
+          record_max_length: d.recordMaxLength ? parseInt(d.recordMaxLength) : undefined,
+        }));
         break;
 
       case 'dial':
-        await telnyx.calls.dial({
-          connection_id: d.connectionId || env.TELNYX_CONNECTION_ID,
+        await telnyx.calls.dial(clean({
+          connection_id: d.connectionId,
           to: d.to,
           from: d.from || undefined,
-        });
-        await autoAdvance(session, nodeId, ccid);
-        break;
-
-      case 'hold':
-        // hold/unhold not available as SDK methods — use raw post with encoding
-        if (d.unhold) {
-          await telnyx.post(`/v2/calls/${encodeURIComponent(ccid)}/actions/unhold`, { body: {} });
-        } else {
-          await telnyx.post(`/v2/calls/${encodeURIComponent(ccid)}/actions/hold`, {
-            body: { audio_url: d.audioUrl || undefined },
-          });
-        }
+          from_display_name: d.fromDisplayName || undefined,
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+          timeout_secs: d.timeoutSecs ? parseInt(d.timeoutSecs) : undefined,
+          time_limit_secs: d.timeLimitSecs ? parseInt(d.timeLimitSecs) : undefined,
+          webhook_url: d.webhookUrl || undefined,
+          record: d.record || undefined,
+          record_format: d.recordFormat || undefined,
+          sip_auth_username: d.sipAuthUsername || undefined,
+          sip_auth_password: d.sipAuthPassword || undefined,
+          answering_machine_detection: d.answeringMachineDetection || undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       case 'sendDTMF':
-        await telnyx.calls.actions.sendDtmf(ccid, { digits: d.digits, duration_millis: d.durationMs || 250 });
+        await telnyx.calls.actions.sendDtmf(ccid, clean({
+          digits: d.digits,
+          duration_millis: parseInt(d.durationMs) || 250,
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       case 'refer':
-        await telnyx.calls.actions.refer(ccid, { sip_address: d.sipAddress });
+        await telnyx.calls.actions.refer(ccid, clean({
+          sip_address: d.sipAddress,
+          sip_auth_username: d.sipAuthUsername || undefined,
+          sip_auth_password: d.sipAuthPassword || undefined,
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         break;
 
       case 'clientStateUpdate':
@@ -198,176 +276,281 @@ async function executeNode(session, nodeId, ccid) {
         break;
 
       case 'sendSipInfo':
-        await telnyx.calls.actions.sendSipInfo(ccid, { content_type: d.sipInfoType, body: d.sipInfoBody });
+        await telnyx.calls.actions.sendSipInfo(ccid, {
+          content_type: d.sipInfoType,
+          body: d.sipInfoBody,
+        });
         await autoAdvance(session, nodeId, ccid);
         break;
 
       // ── Media ──
-      case 'speak':
-        await telnyx.calls.actions.speak(ccid, {
-          payload: d.payload || 'Hello', voice: d.voice || 'female', language: d.language || 'en-US',
-        });
+      case 'speak': {
+        await telnyx.calls.actions.speak(ccid, clean({
+          payload: d.payload || 'Hello',
+          ...resolveVoice(d.voice),
+          language: d.language || 'en-US',
+          payload_type: d.payloadType || 'text',
+          service_level: d.serviceLevel || 'premium',
+          loop: d.loop ? parseInt(d.loop) : undefined,
+          target_legs: d.targetLegs || undefined,
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         break;
+      }
 
       case 'playAudio':
-        await telnyx.calls.actions.startPlayback(ccid, {
-          audio_url: d.audioUrl,
-          loop: d.loop === 'infinite' ? 'infinity' : undefined,
+        await telnyx.calls.actions.startPlayback(ccid, clean({
+          audio_url: d.audioUrl || undefined,
+          media_name: d.mediaName || undefined,
+          audio_type: d.audioType || undefined,
+          loop: d.loop ? parseInt(d.loop) : undefined,
           overlay: d.overlay || false,
-        });
+          target_legs: d.targetLegs || undefined,
+          cache_audio: d.cacheAudio !== false,
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         break;
 
       case 'playbackStop':
-        await telnyx.calls.actions.stopPlayback(ccid);
+        await telnyx.calls.actions.stopPlayback(ccid, clean({
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       // ── Gather / DTMF Routing ──
-      case 'gather':
+      case 'gather': {
         session.gatherPending = true;
-        await telnyx.calls.actions.gatherUsingSpeak(ccid, {
+        await telnyx.calls.actions.gatherUsingSpeak(ccid, clean({
           payload: d.payload || 'Please make a selection.',
-          voice: d.voice || 'female',
+          ...resolveVoice(d.voice),
           language: d.language || 'en-US',
+          payload_type: d.payloadType || 'text',
+          service_level: d.serviceLevel || 'premium',
           maximum_digits: parseInt(d.maxDigits) || 1,
+          minimum_digits: d.minDigits ? parseInt(d.minDigits) : undefined,
           timeout_millis: (parseInt(d.timeout) || 10) * 1000,
+          inter_digit_timeout_millis: d.interDigitTimeout ? parseInt(d.interDigitTimeout) * 1000 : undefined,
           valid_digits: (d.digits || '1,2,3').replace(/,/g, ''),
-        });
+          invalid_payload: d.invalidPayload || undefined,
+          maximum_tries: d.maxTries ? parseInt(d.maxTries) : undefined,
+          terminating_digit: d.terminatingDigit || undefined,
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         break;
+      }
 
       case 'gatherAudio':
         session.gatherPending = true;
-        await telnyx.calls.actions.gatherUsingAudio(ccid, {
-          audio_url: d.audioUrl,
+        await telnyx.calls.actions.gatherUsingAudio(ccid, clean({
+          audio_url: d.audioUrl || undefined,
+          media_name: d.mediaName || undefined,
+          invalid_audio_url: d.invalidAudioUrl || undefined,
+          invalid_media_name: d.invalidMediaName || undefined,
           maximum_digits: parseInt(d.maxDigits) || 1,
+          minimum_digits: d.minDigits ? parseInt(d.minDigits) : undefined,
           timeout_millis: (parseInt(d.timeout) || 10) * 1000,
-        });
+          inter_digit_timeout_millis: d.interDigitTimeout ? parseInt(d.interDigitTimeout) * 1000 : undefined,
+          maximum_tries: d.maxTries ? parseInt(d.maxTries) : undefined,
+          valid_digits: d.validDigits || undefined,
+          terminating_digit: d.terminatingDigit || undefined,
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         break;
 
       case 'gatherAI':
         session.gatherPending = true;
-        await telnyx.calls.actions.gatherUsingAI(ccid, {
-          model: d.model || undefined, prompt: d.prompt || undefined,
-        });
+        await telnyx.calls.actions.gatherUsingAI(ccid, clean({
+          parameters: { properties: '', required: '', type: '' },
+          greeting: d.greeting || undefined,
+          gather_ended_speech: d.gatherEndedSpeech || undefined,
+          ...resolveVoice(d.voice),
+          language: d.language || undefined,
+          user_response_timeout_ms: d.userResponseTimeoutMs ? parseInt(d.userResponseTimeoutMs) : undefined,
+          send_partial_results: d.sendPartialResults || undefined,
+          send_message_history_updates: d.sendMessageHistoryUpdates || undefined,
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         break;
 
       case 'gatherStop':
-        await telnyx.calls.actions.stopGather(ccid);
+        await telnyx.calls.actions.stopGather(ccid, clean({
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       // ── Queue ──
       case 'enqueue':
-        await telnyx.calls.actions.enqueue(ccid, { queue_name: d.queueName || 'General_Queue' });
+        await telnyx.calls.actions.enqueue(ccid, clean({
+          queue_name: d.queueName || 'General_Queue',
+          max_size: d.maxSize ? parseInt(d.maxSize) : undefined,
+          max_wait_time_secs: d.maxWaitTimeSecs ? parseInt(d.maxWaitTimeSecs) : undefined,
+          keep_after_hangup: d.keepAfterHangup || undefined,
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         break;
 
       case 'leaveQueue':
-        await telnyx.calls.actions.leaveQueue(ccid);
+        await telnyx.calls.actions.leaveQueue(ccid, clean({
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       // ── Recording ──
       case 'recordStart':
-        await telnyx.calls.actions.startRecording(ccid, {
+        await telnyx.calls.actions.startRecording(ccid, clean({
           format: d.format || 'mp3',
           channels: d.channels || 'dual',
           max_length: d.maxLength ? parseInt(d.maxLength) : undefined,
-          trim_silence: d.trimSilence === 'true',
-        });
+          play_beep: d.playBeep || undefined,
+          recording_track: d.recordingTrack || 'both',
+          timeout_secs: d.timeoutSecs ? parseInt(d.timeoutSecs) : undefined,
+          custom_file_name: d.customFileName || undefined,
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       case 'recordStop':
-        await telnyx.calls.actions.stopRecording(ccid);
+        await telnyx.calls.actions.stopRecording(ccid, clean({
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       case 'recordPause':
-        await telnyx.calls.actions.pauseRecording(ccid);
+        await telnyx.calls.actions.pauseRecording(ccid, clean({
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       case 'recordResume':
-        await telnyx.calls.actions.resumeRecording(ccid);
+        await telnyx.calls.actions.resumeRecording(ccid, clean({
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       case 'siprecStart':
-        await telnyx.calls.actions.startSiprec(ccid);
+        await telnyx.calls.actions.startSiprec(ccid, clean({
+          connector_name: d.connectorName || undefined,
+          siprec_track: d.siprecTrack || undefined,
+          session_timeout_secs: d.sessionTimeoutSecs ? parseInt(d.sessionTimeoutSecs) : undefined,
+          secure: d.secure || undefined,
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       case 'siprecStop':
-        await telnyx.calls.actions.stopSiprec(ccid);
+        await telnyx.calls.actions.stopSiprec(ccid, clean({
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       // ── Streaming / Transcription / Fork ──
       case 'streamingStart':
-        await telnyx.calls.actions.startStreaming(ccid, {
-          stream_url: d.streamUrl, stream_track: d.streamTrack || 'both_tracks',
-        });
+        await telnyx.calls.actions.startStreaming(ccid, clean({
+          stream_url: d.streamUrl,
+          stream_track: d.streamTrack || 'both_tracks',
+          stream_codec: d.streamCodec || undefined,
+          stream_auth_token: d.streamAuthToken || undefined,
+          enable_dialogflow: d.enableDialogflow || undefined,
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       case 'streamingStop':
-        await telnyx.calls.actions.stopStreaming(ccid);
+        await telnyx.calls.actions.stopStreaming(ccid, clean({
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       case 'transcriptionStart':
-        await telnyx.calls.actions.startTranscription(ccid, { language: d.language || 'en' });
+        await telnyx.calls.actions.startTranscription(ccid, clean({
+          transcription_engine: d.transcriptionEngine || 'Telnyx',
+          language: d.language || 'en',
+          transcription_tracks: d.transcriptionTracks || 'inbound',
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       case 'transcriptionStop':
-        await telnyx.calls.actions.stopTranscription(ccid);
+        await telnyx.calls.actions.stopTranscription(ccid, clean({
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       case 'forkStart':
-        await telnyx.calls.actions.startForking(ccid, {
-          target: d.target, stream_type: d.streamType || 'raw',
-        });
+        await telnyx.calls.actions.startForking(ccid, clean({
+          target: d.target || undefined,
+          rx: d.rx || undefined,
+          tx: d.tx || undefined,
+          stream_type: d.streamType || 'decrypted',
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       case 'forkStop':
-        await telnyx.calls.actions.stopForking(ccid);
+        await telnyx.calls.actions.stopForking(ccid, clean({
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       // ── AI ──
       case 'noiseSuppressionStart':
-        await telnyx.calls.actions.startNoiseSuppression(ccid, { direction: d.direction || 'both' });
+        await telnyx.calls.actions.startNoiseSuppression(ccid, clean({
+          direction: d.direction || 'both',
+          noise_suppression_engine: d.engine || 'Krisp',
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       case 'noiseSuppressionStop':
-        await telnyx.calls.actions.stopNoiseSuppression(ccid);
+        await telnyx.calls.actions.stopNoiseSuppression(ccid, clean({
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       case 'aiAssistantStart':
-        await telnyx.calls.actions.startAIAssistant(ccid, {
-          model: d.model || undefined, system_prompt: d.systemPrompt || undefined,
-        });
+        await telnyx.calls.actions.startAIAssistant(ccid, clean({
+          ...resolveVoice(d.voice),
+          greeting: d.greeting || undefined,
+          assistant: d.systemPrompt ? { system_prompt: d.systemPrompt } : undefined,
+          send_message_history_updates: d.sendMessageHistoryUpdates || undefined,
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       case 'aiAssistantStop':
-        await telnyx.calls.actions.stopAIAssistant(ccid);
+        await telnyx.calls.actions.stopAIAssistant(ccid, clean({
+          client_state: d.clientState ? Buffer.from(d.clientState).toString('base64') : undefined,
+        }));
         await autoAdvance(session, nodeId, ccid);
         break;
 
       // ── Conference ──
       case 'conference':
-        await telnyx.conferences.create({
+        await telnyx.conferences.create(clean({
           call_control_id: ccid,
           name: d.conferenceName || 'conf-' + Date.now(),
           beep_enabled: d.beepEnabled || 'always',
-          start_conference_on_create: true,
-        });
+          start_conference_on_create: d.startOnCreate !== false,
+          max_participants: d.maxParticipants ? parseInt(d.maxParticipants) : undefined,
+        }));
         break;
 
       default:

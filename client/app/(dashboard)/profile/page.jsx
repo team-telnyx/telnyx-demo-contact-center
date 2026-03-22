@@ -7,23 +7,19 @@ import { useGetUserDataQuery, useUpdateProfileMutation } from '../../../src/stor
 
 export default function ProfilePage() {
   const dispatch = useAppDispatch();
-  const { username, firstName, lastName, avatarUrl, telnyxApiKey, telnyxPublicKey, appConnectionId, webrtcConnectionId } = useAppSelector((s) => s.auth);
+  const { username, firstName, lastName, avatarUrl } = useAppSelector((s) => s.auth);
   const { data: userData, refetch } = useGetUserDataQuery(username, { skip: !username });
   const [updateProfile, { isLoading: isSaving }] = useUpdateProfileMutation();
 
   const [form, setForm] = useState({
     firstName: '',
     lastName: '',
-    telnyxApiKey: '',
-    telnyxPublicKey: '',
-    appConnectionId: '',
-    webrtcConnectionId: '',
+    assignedQueue: '',
   });
   const [avatarPreview, setAvatarPreview] = useState(null);
   const [avatarFile, setAvatarFile] = useState(null);
   const [success, setSuccess] = useState('');
   const [error, setError] = useState('');
-  const [showApiKey, setShowApiKey] = useState(false);
   const fileRef = useRef(null);
 
   // Sync form with Redux/fetched data
@@ -31,13 +27,10 @@ export default function ProfilePage() {
     setForm({
       firstName: firstName || userData?.firstName || '',
       lastName: lastName || userData?.lastName || '',
-      telnyxApiKey: telnyxApiKey || '',
-      telnyxPublicKey: telnyxPublicKey || '',
-      appConnectionId: appConnectionId || userData?.appConnectionId || '',
-      webrtcConnectionId: webrtcConnectionId || userData?.webrtcConnectionId || '',
+      assignedQueue: userData?.assignedQueue || 'General_Queue',
     });
     setAvatarPreview(avatarUrl || userData?.avatar || null);
-  }, [firstName, lastName, telnyxApiKey, telnyxPublicKey, appConnectionId, webrtcConnectionId, avatarUrl, userData]);
+  }, [firstName, lastName, avatarUrl, userData]);
 
   const handleAvatarChange = (e) => {
     const file = e.target.files?.[0];
@@ -60,10 +53,7 @@ export default function ProfilePage() {
     const body = {};
     if (form.firstName) body.firstName = form.firstName;
     if (form.lastName) body.lastName = form.lastName;
-    if (form.telnyxApiKey !== (telnyxApiKey || '')) body.telnyxApiKey = form.telnyxApiKey;
-    if (form.telnyxPublicKey !== (telnyxPublicKey || '')) body.telnyxPublicKey = form.telnyxPublicKey;
-    if (form.appConnectionId !== (appConnectionId || '')) body.appConnectionId = form.appConnectionId;
-    if (form.webrtcConnectionId !== (webrtcConnectionId || '')) body.webrtcConnectionId = form.webrtcConnectionId;
+    body.assignedQueue = form.assignedQueue || 'General_Queue';
     if (avatarFile) body.avatar = avatarFile;
 
     try {
@@ -72,10 +62,6 @@ export default function ProfilePage() {
         firstName: form.firstName,
         lastName: form.lastName,
         avatarUrl: avatarPreview,
-        telnyxApiKey: form.telnyxApiKey,
-        telnyxPublicKey: form.telnyxPublicKey,
-        appConnectionId: form.appConnectionId,
-        webrtcConnectionId: form.webrtcConnectionId,
       }));
       setAvatarFile(null);
       setSuccess('Profile updated successfully');
@@ -150,76 +136,38 @@ export default function ProfilePage() {
               />
             </div>
           </div>
-        </div>
-
-        {/* API Keys Section */}
-        <div className="rounded-card border border-gray-200 bg-white p-6 shadow-sm">
-          <h2 className="mb-4 text-sm font-semibold text-gray-900 uppercase tracking-wider">Telnyx API Keys</h2>
-          <p className="mb-4 text-xs text-gray-400">
-            Your API keys are used to manage phone numbers and access Telnyx services from your account.
-          </p>
-          <div className="space-y-4">
-            <div>
-              <label className="mb-1 block text-xs font-medium text-gray-500">API Key (v2)</label>
-              <div className="relative">
-                <input
-                  type={showApiKey ? 'text' : 'password'}
-                  value={form.telnyxApiKey}
-                  onChange={(e) => setForm({ ...form, telnyxApiKey: e.target.value })}
-                  placeholder="KEY..."
-                  className="w-full rounded-btn border border-gray-300 px-3 py-2 pr-16 text-sm font-mono text-gray-900 focus:border-telnyx-green focus:outline-none focus:ring-1 focus:ring-telnyx-green"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowApiKey(!showApiKey)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-gray-400 hover:text-gray-600"
-                >
-                  {showApiKey ? 'Hide' : 'Show'}
-                </button>
-              </div>
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-gray-500">Public Key</label>
-              <input
-                type="text"
-                value={form.telnyxPublicKey}
-                onChange={(e) => setForm({ ...form, telnyxPublicKey: e.target.value })}
-                placeholder="..."
-                className="w-full rounded-btn border border-gray-300 px-3 py-2 text-sm font-mono text-gray-900 focus:border-telnyx-green focus:outline-none focus:ring-1 focus:ring-telnyx-green"
-              />
-            </div>
+          <div className="mt-4">
+            <label className="mb-1 block text-xs font-medium text-gray-500">Assigned Queue</label>
+            <input
+              type="text"
+              value={form.assignedQueue}
+              onChange={(e) => setForm({ ...form, assignedQueue: e.target.value })}
+              placeholder="General_Queue"
+              className="w-full rounded-btn border border-gray-300 px-3 py-2 text-sm font-mono text-gray-900 focus:border-telnyx-green focus:outline-none focus:ring-1 focus:ring-telnyx-green"
+            />
+            <p className="mt-1 text-[10px] text-gray-400">Queue this agent listens on for auto-routing (e.g. General_Queue, Sales_Queue, Support_Queue)</p>
           </div>
         </div>
 
-        {/* Connection IDs Section */}
-        <div className="rounded-card border border-gray-200 bg-white p-6 shadow-sm">
-          <h2 className="mb-4 text-sm font-semibold text-gray-900 uppercase tracking-wider">Connection IDs</h2>
-          <p className="mb-4 text-xs text-gray-400">
-            Configure the Telnyx Call Control Application and WebRTC credential connection IDs for voice routing.
-          </p>
-          <div className="space-y-4">
-            <div>
-              <label className="mb-1 block text-xs font-medium text-gray-500">Application Connection ID</label>
-              <input
-                type="text"
-                value={form.appConnectionId}
-                onChange={(e) => setForm({ ...form, appConnectionId: e.target.value })}
-                placeholder="e.g. 2397473570750989860"
-                className="w-full rounded-btn border border-gray-300 px-3 py-2 text-sm font-mono text-gray-900 focus:border-telnyx-green focus:outline-none focus:ring-1 focus:ring-telnyx-green"
-              />
-              <p className="mt-1 text-[10px] text-gray-400">Voice application used for inbound call routing and dialing agents</p>
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-gray-500">WebRTC Connection ID</label>
-              <input
-                type="text"
-                value={form.webrtcConnectionId}
-                onChange={(e) => setForm({ ...form, webrtcConnectionId: e.target.value })}
-                placeholder="e.g. 1846572522338780702"
-                className="w-full rounded-btn border border-gray-300 px-3 py-2 text-sm font-mono text-gray-900 focus:border-telnyx-green focus:outline-none focus:ring-1 focus:ring-telnyx-green"
-              />
-              <p className="mt-1 text-[10px] text-gray-400">SIP credential connection for WebRTC softphone</p>
-            </div>
+        {/* Connection Info (read-only) */}
+        <div className="rounded-card border border-gray-200 bg-white p-6 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+          <h2 className="mb-4 text-sm font-semibold text-gray-900 dark:text-white uppercase tracking-wider">Connection Info</h2>
+          <p className="mb-3 text-xs text-gray-400">Auto-generated when your account was created. These are managed by the system.</p>
+          <div className="space-y-2 text-sm">
+            {[
+              { label: 'SIP Credential Connection', value: userData?.webrtcConnectionId },
+              { label: 'Voice App ID', value: userData?.appConnectionId },
+              { label: 'Outbound Voice Profile', value: userData?.outboundVoiceProfileId },
+              { label: 'Messaging Profile', value: userData?.messagingProfileId },
+              { label: 'Assigned Queue', value: userData?.assignedQueue || 'General_Queue', alwaysShow: true },
+            ].map((item, i) => (
+              <div key={i} className="flex justify-between items-center py-1.5 border-b border-gray-100 dark:border-gray-700 last:border-0">
+                <span className="text-gray-500 dark:text-gray-400">{item.label}</span>
+                <span className="font-mono text-gray-900 dark:text-white text-xs">
+                  {item.value || <span className="text-yellow-500 italic">Not provisioned</span>}
+                </span>
+              </div>
+            ))}
           </div>
         </div>
 

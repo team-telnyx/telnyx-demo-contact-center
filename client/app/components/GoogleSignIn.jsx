@@ -32,7 +32,8 @@ export default function GoogleSignIn({ onError }) {
       localStorage.setItem('token', data.token);
       dispatch(login.fulfilled(data, '', {}));
 
-      router.push('/dashboard');
+      const loginRole = data.role || 'agent';
+      router.push(loginRole === 'admin' ? '/admin' : '/dashboard');
     } catch (err) {
       onError?.(err.message);
     }

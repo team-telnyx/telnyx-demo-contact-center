@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
 import { encrypt, decrypt } from '../utils/encryption.js';
+import { getWebhookBaseUrl } from './org-telnyx.js';
 import User from '../../models/User.js';
 import TelnyxService from './telnyx.service.js';
 
@@ -49,12 +50,13 @@ const AuthService = {
       throw new Error('Failed to create outbound voice profile');
     }
 
+    const webhookBase = await getWebhookBaseUrl();
     const connectionName = `SIPConnection_${sipUsername}`;
     const connectionData = {
       connection_name: connectionName,
       user_name: sipUsername,
       password: sipPassword,
-      webhook_event_url: `https://${env.APP_HOST}:${env.APP_PORT}/api/voice/outbound-webrtc-bridge`,
+      webhook_event_url: `${webhookBase}/api/voice/outbound-webrtc-bridge`,
       outbound: {
         call_parking_enabled: true,
         outbound_voice_profile_id: profileResponse.data.id,

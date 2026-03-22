@@ -20,7 +20,8 @@ export default function LoginPage() {
     try {
       const result = await dispatch(login({ username, password })).unwrap();
       if (result.token) {
-        router.push('/dashboard');
+        const loginRole = result.role || 'agent';
+        router.push(loginRole === 'admin' ? '/admin' : '/dashboard');
       }
     } catch (err) {
       // Error is handled by Redux state

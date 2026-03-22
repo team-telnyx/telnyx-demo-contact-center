@@ -14,7 +14,9 @@ const baseQuery = fetchBaseQuery({
 export const api = createApi({
   reducerPath: 'api',
   baseQuery,
-  tagTypes: ['Agents', 'QueueCalls', 'Conversations', 'Messages', 'CallHistory', 'MyNumbers', 'IvrFlows'],
+  refetchOnFocus: true,
+  refetchOnReconnect: true,
+  tagTypes: ['Agents', 'QueueCalls', 'Conversations', 'Messages', 'CallHistory', 'MyNumbers', 'IvrFlows', 'Recordings', 'AdminUsers', 'AdminMetrics', 'AdminReports', 'AdminSettings'],
   endpoints: (builder) => ({
     // Agents
     getAgents: builder.query({
@@ -94,6 +96,31 @@ export const api = createApi({
       query: () => '/users/messaging-numbers',
     }),
 
+    // Recordings
+    getRecordings: builder.query({
+      query: (filters = {}) => {
+        const { page = 1, size = 20, ...rest } = filters;
+        const params = new URLSearchParams({ page, size });
+        Object.entries(rest).forEach(([k, v]) => { if (v) params.append(k, v); });
+        return `/voice/recordings?${params.toString()}`;
+      },
+      providesTags: ['Recordings'],
+    }),
+    deleteRecording: builder.mutation({
+      query: (id) => ({ url: `/voice/recordings/${id}`, method: 'DELETE' }),
+      invalidatesTags: ['Recordings'],
+    }),
+
+    // Call Events (Debug)
+    getCallEvents: builder.query({
+      query: (filters = {}) => {
+        const { page = 1, size = 25, ...rest } = filters;
+        const params = new URLSearchParams({ page, size });
+        Object.entries(rest).forEach(([k, v]) => { if (v) params.append(k, v); });
+        return `/voice/call-events?${params.toString()}`;
+      },
+    }),
+
     // Call History
     getCallHistory: builder.query({
       query: ({ page = 1, limit = 50, direction, status } = {}) => {
@@ -137,6 +164,58 @@ export const api = createApi({
     getConnectionNumbers: builder.query({
       query: () => '/ivr/connection-numbers',
     }),
+    getVoices: builder.query({
+      query: () => '/ivr/voices',
+    }),
+
+    // Admin User Management
+    getAdminUsers: builder.query({
+      query: ({ page = 1, size = 20 } = {}) => `/admin/users?page=${page}&size=${size}`,
+      providesTags: ['AdminUsers'],
+    }),
+    getAdminUser: builder.query({
+      query: (id) => `/admin/users/${id}`,
+      providesTags: ['AdminUsers'],
+    }),
+    createAdminUser: builder.mutation({
+      query: (body) => ({ url: '/admin/users', method: 'POST', body }),
+      invalidatesTags: ['AdminUsers', 'Agents'],
+    }),
+    updateAdminUser: builder.mutation({
+      query: ({ id, ...body }) => ({ url: `/admin/users/${id}`, method: 'PUT', body }),
+      invalidatesTags: ['AdminUsers', 'Agents'],
+    }),
+    deleteAdminUser: builder.mutation({
+      query: (id) => ({ url: `/admin/users/${id}`, method: 'DELETE' }),
+      invalidatesTags: ['AdminUsers', 'Agents'],
+    }),
+
+    // Admin Settings
+    getOrgSettings: builder.query({
+      query: () => '/admin/settings',
+      providesTags: ['AdminSettings'],
+    }),
+    updateOrgSettings: builder.mutation({
+      query: (body) => ({ url: '/admin/settings', method: 'PUT', body }),
+      invalidatesTags: ['AdminSettings'],
+    }),
+
+    // Admin Metrics & Reports
+    getAgentMetrics: builder.query({
+      query: () => '/admin/metrics/agents',
+      providesTags: ['AdminMetrics'],
+    }),
+    getCallReports: builder.query({
+      query: ({ startDate, endDate, agentUsername, queueName } = {}) => {
+        const params = new URLSearchParams();
+        if (startDate) params.append('startDate', startDate);
+        if (endDate) params.append('endDate', endDate);
+        if (agentUsername) params.append('agentUsername', agentUsername);
+        if (queueName) params.append('queueName', queueName);
+        return `/admin/reports/calls?${params.toString()}`;
+      },
+      providesTags: ['AdminReports'],
+    }),
 
     // User data
     getUserData: builder.query({
@@ -178,10 +257,35 @@ export const api = createApi({
       }),
       invalidatesTags: ['MyNumbers'],
     }),
+    assignNumber: builder.mutation({
+      query: (body) => ({
+        url: '/users/assign-number',
+        method: 'POST',
+        body,
+      }),
+      invalidatesTags: ['MyNumbers'],
+    }),
+    unassignNumber: builder.mutation({
+      query: (body) => ({
+        url: '/users/unassign-number',
+        method: 'POST',
+        body,
+      }),
+      invalidatesTags: ['MyNumbers'],
+    }),
   }),
 });
 
 export const {
+  useGetOrgSettingsQuery,
+  useUpdateOrgSettingsMutation,
+  useGetAdminUsersQuery,
+  useGetAdminUserQuery,
+  useCreateAdminUserMutation,
+  useUpdateAdminUserMutation,
+  useDeleteAdminUserMutation,
+  useGetAgentMetricsQuery,
+  useGetCallReportsQuery,
   useGetAgentsQuery,
   useGetQueueCallsQuery,
   useAcceptCallMutation,
@@ -201,6 +305,8 @@ export const {
   useSearchAvailableNumbersQuery,
   usePurchaseNumberMutation,
   useReleaseNumberMutation,
+  useAssignNumberMutation,
+  useUnassignNumberMutation,
   useGetIvrFlowsQuery,
   useGetIvrFlowQuery,
   useCreateIvrFlowMutation,
@@ -209,5 +315,9 @@ export const {
   usePublishIvrFlowMutation,
   useUnpublishIvrFlowMutation,
   useGetConnectionNumbersQuery,
+  useGetVoicesQuery,
   useGetMessagingNumbersQuery,
+  useGetRecordingsQuery,
+  useGetCallEventsQuery,
+  useDeleteRecordingMutation,
 } = api;

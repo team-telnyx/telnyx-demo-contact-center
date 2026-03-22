@@ -1,7 +1,6 @@
 import express from 'express';
 import { Op } from 'sequelize';
-import { env } from '../src/config/env.js';
-import Telnyx from 'telnyx';
+import { getOrgTelnyxClient, getWebhookBaseUrl } from '../src/services/org-telnyx.js';
 import Voice from '../models/Voice.js';
 import User from '../models/User.js';
 import CallRecord from '../models/CallRecord.js';
@@ -10,132 +9,125 @@ import * as ivrEngine from '../src/services/ivr-engine.js';
 import { authenticate } from '../src/middleware/auth.js';
 import { routeCallToAgent, routeToNextAgent } from '../src/services/auto-route.js';
 
-const telnyx = new Telnyx({ apiKey: env.TELNYX_API });
 const router = express.Router();
 
 //================================================ INBOUND CALL WEBHOOK — IVR ENGINE + FALLBACK ================================================
 
+async function handleCallInitiated(telnyx, data, callControlId) {
+  Voice.create({
+    queue_uuid: callControlId,
+    telnyx_number: data.payload.to,
+    destination_number: data.payload.from,
+    direction: data.payload.direction,
+  }).catch((error) => console.error('Error saving call to database:', error));
+
+  CallRecord.create({
+    telnyxCallControlId: callControlId,
+    direction: 'inbound',
+    fromNumber: data.payload.from,
+    toNumber: data.payload.to,
+    status: 'queued',
+    startedAt: new Date(),
+  }).catch((error) => console.error('Error creating call record:', error));
+
+  const telnyxNumber = data.payload.to;
+  const session = await ivrEngine.startSession(callControlId, telnyxNumber);
+
+  if (session) {
+    console.log(`[IVR] Flow started for ${telnyxNumber}, call ${callControlId}`);
+  } else {
+    console.log(`[Default] No IVR flow for ${telnyxNumber}, using default queue`);
+    await telnyx.calls.actions.answer(callControlId);
+  }
+}
+
+async function handleCallAnswered(telnyx, data, callControlId) {
+  CallRecord.update(
+    { status: 'active', answeredAt: new Date() },
+    { where: { telnyxCallControlId: callControlId } }
+  ).catch(() => {});
+
+  if (ivrEngine.hasSession(callControlId)) {
+    await ivrEngine.handleMediaEnded(callControlId);
+  } else {
+    await telnyx.calls.actions.enqueue(callControlId, { queue_name: 'General_Queue' });
+  }
+}
+
+async function handleCallEnqueued(telnyx, data, callControlId) {
+  const queueName = data.payload.queue || 'General_Queue';
+  broadcast('NEW_CALL', data);
+  console.log('Call Enqueued:', callControlId, 'Queue:', queueName);
+
+  await Voice.update(
+    { queue_name: queueName },
+    { where: { queue_uuid: callControlId } }
+  ).catch((error) => console.error('Error saving call to database:', error));
+
+  const routed = await routeCallToAgent(callControlId);
+  if (!routed) {
+    await telnyx.calls.actions.startPlayback(callControlId, {
+      audio_url: 'http://com.twilio.music.classical.s3.amazonaws.com/MARKOVICHAMP-Borghestral.mp3',
+    });
+  }
+}
+
+async function handleMediaEnded(callControlId) {
+  if (ivrEngine.hasSession(callControlId)) {
+    await ivrEngine.handleMediaEnded(callControlId);
+  }
+}
+
+async function handleGatherEnded(telnyx, data, callControlId) {
+  const digits = data.payload.digits;
+  if (ivrEngine.hasSession(callControlId) && digits) {
+    const handled = await ivrEngine.handleGatherResult(callControlId, digits);
+    if (!handled) {
+      console.log(`[IVR] No route for digit "${digits}", hanging up`);
+      await telnyx.calls.actions.hangup(callControlId);
+    }
+  }
+}
+
+async function handleCallHangup(data, callControlId) {
+  ivrEngine.endSession(callControlId);
+
+  const voiceRecord = await Voice.findOne({ where: { queue_uuid: callControlId } });
+  CallRecord.update(
+    {
+      status: data.payload.hangup_cause === 'normal_clearing' ? 'completed' : 'missed',
+      endedAt: new Date(),
+      agentUsername: voiceRecord?.accept_agent || null,
+      queueName: voiceRecord?.queue_name || null,
+    },
+    { where: { telnyxCallControlId: callControlId } }
+  ).catch(() => {});
+
+  await Voice.destroy({ where: { queue_uuid: callControlId } })
+    .catch((err) => console.error('Error cleaning up voice record:', err.message));
+  await Voice.destroy({ where: { bridge_uuid: callControlId } })
+    .catch((err) => console.error('Error cleaning up bridge record:', err.message));
+}
+
+const webhookHandlers = {
+  'call.initiated': (telnyx, data, ccid) => data.payload.direction === 'incoming' ? handleCallInitiated(telnyx, data, ccid) : null,
+  'call.answered': handleCallAnswered,
+  'call.enqueued': handleCallEnqueued,
+  'call.speak.ended': (telnyx, data, ccid) => handleMediaEnded(ccid),
+  'call.playback.ended': (telnyx, data, ccid) => handleMediaEnded(ccid),
+  'call.gather.ended': handleGatherEnded,
+  'call.hangup': (telnyx, data, ccid) => handleCallHangup(data, ccid),
+};
+
 router.post('/webhook', express.json(), async (req, res) => {
   const data = req.body.data;
-  const direction = data.payload.direction;
   const callControlId = data.payload.call_control_id;
 
   try {
-    // ── call.initiated (incoming) ──
-    if (data.event_type === 'call.initiated' && direction === 'incoming') {
-      Voice.create({
-        queue_uuid: callControlId,
-        telnyx_number: data.payload.to,
-        destination_number: data.payload.from,
-        direction: data.payload.direction,
-      }).catch((error) => console.error('Error saving call to database:', error));
-
-      // Create call history record
-      CallRecord.create({
-        telnyxCallControlId: callControlId,
-        direction: 'inbound',
-        fromNumber: data.payload.from,
-        toNumber: data.payload.to,
-        status: 'queued',
-        startedAt: new Date(),
-      }).catch((error) => console.error('Error creating call record:', error));
-
-      // Check if there's an active IVR flow for the dialed number
-      const telnyxNumber = data.payload.to;
-      const session = await ivrEngine.startSession(callControlId, telnyxNumber);
-
-      if (session) {
-        console.log(`[IVR] Flow started for ${telnyxNumber}, call ${callControlId}`);
-      } else {
-        console.log(`[Default] No IVR flow for ${telnyxNumber}, using default queue`);
-        await telnyx.calls.actions.answer(callControlId);
-      }
-    }
-
-    // ── call.answered ──
-    if (data.event_type === 'call.answered') {
-      CallRecord.update(
-        { status: 'active', answeredAt: new Date() },
-        { where: { telnyxCallControlId: callControlId } }
-      ).catch(() => {});
-
-      if (ivrEngine.hasSession(callControlId)) {
-        await ivrEngine.handleMediaEnded(callControlId);
-      } else {
-        await telnyx.calls.actions.enqueue(callControlId, { queue_name: 'General_Queue' });
-      }
-    }
-
-    // ── call.enqueued ──
-    if (data.event_type === 'call.enqueued') {
-      const queueName = data.payload.queue || 'General_Queue';
-      broadcast('NEW_CALL', data);
-      console.log('Call Enqueued:', callControlId, 'Queue:', queueName);
-
-      Voice.update(
-        { queue_name: queueName },
-        { where: { queue_uuid: callControlId } }
-      ).catch((error) => console.error('Error saving call to database:', error));
-
-      // Auto-route: try to dial an available agent
-      const routed = await routeCallToAgent(callControlId);
-      if (!routed) {
-        // No agent available — play hold music until one comes online
-        await telnyx.calls.actions.startPlayback(callControlId, {
-          audio_url: 'http://com.twilio.music.classical.s3.amazonaws.com/MARKOVICHAMP-Borghestral.mp3',
-        });
-      }
-    }
-
-    // ── call.speak.ended — IVR engine advances to next node ──
-    if (data.event_type === 'call.speak.ended') {
-      if (ivrEngine.hasSession(callControlId)) {
-        await ivrEngine.handleMediaEnded(callControlId);
-      }
-    }
-
-    // ── call.playback.ended — IVR engine advances to next node ──
-    if (data.event_type === 'call.playback.ended') {
-      if (ivrEngine.hasSession(callControlId)) {
-        await ivrEngine.handleMediaEnded(callControlId);
-      }
-    }
-
-    // ── call.gather.ended — IVR engine routes based on digit pressed ──
-    if (data.event_type === 'call.gather.ended') {
-      const digits = data.payload.digits;
-      if (ivrEngine.hasSession(callControlId) && digits) {
-        const handled = await ivrEngine.handleGatherResult(callControlId, digits);
-        if (!handled) {
-          console.log(`[IVR] No route for digit "${digits}", hanging up`);
-          await telnyx.calls.actions.hangup(callControlId);
-        }
-      }
-    }
-
-    // ── call.hangup — Clean up IVR session and Voice record ──
-    if (data.event_type === 'call.hangup') {
-      ivrEngine.endSession(callControlId);
-
-      // Finalize call history record
-      const voiceRecord = await Voice.findOne({ where: { queue_uuid: callControlId } });
-      CallRecord.update(
-        {
-          status: data.payload.hangup_cause === 'normal_clearing' ? 'completed' : 'missed',
-          endedAt: new Date(),
-          agentUsername: voiceRecord?.accept_agent || null,
-          queueName: voiceRecord?.queue_name || null,
-        },
-        { where: { telnyxCallControlId: callControlId } }
-      ).catch(() => {});
-      // Remove from queue records so auto-route doesn't pick up dead calls
-      await Voice.destroy({
-        where: { queue_uuid: callControlId }
-      }).catch((err) => console.error('Error cleaning up voice record:', err.message));
-      // Also clean up if this was a bridge leg
-      await Voice.destroy({
-        where: { bridge_uuid: callControlId }
-      }).catch((err) => console.error('Error cleaning up bridge record:', err.message));
+    const handler = webhookHandlers[data.event_type];
+    if (handler) {
+      const telnyx = await getOrgTelnyxClient();
+      await handler(telnyx, data, callControlId);
     }
   } catch (error) {
     console.error(`[webhook] Error handling ${data.event_type}:`, error.message);
@@ -146,6 +138,7 @@ router.post('/webhook', express.json(), async (req, res) => {
 
 router.get('/queue', async (req, res) => {
   try {
+    const telnyx = await getOrgTelnyxClient();
     const response = await telnyx.queues.calls.list('General_Queue');
     res.json(response);
   } catch (error) {
@@ -162,16 +155,20 @@ router.get('/queue', async (req, res) => {
 
 router.post('/accept-call', express.json(), async (req, res) => {
   const { sipUsername, callControlId, callerId } = req.body;
-  const webhookUrlWithParam = `https://${env.APP_HOST}:${env.APP_PORT}/api/voice/outbound?callControlId_Bridge=${encodeURIComponent(callControlId)}`;
 
   try {
+    const telnyx = await getOrgTelnyxClient();
+    const webhookBase = await getWebhookBaseUrl();
+    const webhookUrlWithParam = `${webhookBase}/api/voice/outbound?callControlId_Bridge=${encodeURIComponent(callControlId)}`;
+    const agent = await User.findOne({ where: { sipUsername } });
     await telnyx.calls.dial({
-      connection_id: env.TELNYX_CONNECTION_ID,
+      connection_id: agent?.appConnectionId,
       to: `sip:${sipUsername}@sip.telnyx.com`,
       from: callerId,
+      link_to: callControlId,
       webhook_url: webhookUrlWithParam,
     });
-    console.log('Call Dialed');
+    console.log('Call Dialed (linked to queued leg)');
 
     await Voice.update(
       { accept_agent: sipUsername },
@@ -191,6 +188,11 @@ router.post('/outbound', express.json(), async (req, res) => {
   const hangup_source = req.body.data.payload.hangup_source;
   const clientState = req.body.data.payload.client_state;
   const sipcode = req.body.data.payload.sip_hangup_cause;
+  let telnyx;
+  try { telnyx = await getOrgTelnyxClient(); } catch (err) {
+    console.error('[outbound] Telnyx client unavailable:', err.message);
+    return res.status(200).send('OK');
+  }
 
   if (event_type === 'call.answered') {
     try {
@@ -265,8 +267,10 @@ router.post('/transfer', express.json(), async (req, res) => {
   const callControlFlag = isCallControlIdUsed ? '&isCallControlIdUsed=true' : '';
 
   try {
+    const telnyx = await getOrgTelnyxClient();
+    const webhookBase = await getWebhookBaseUrl();
     const response = await telnyx.calls.actions.transfer(transferId, {
-      webhook_url: `https://${env.APP_HOST}:${env.APP_PORT}/api/voice/transfer-call?callControlId_Bridge=${transferId}${callControlFlag}`,
+      webhook_url: `${webhookBase}/api/voice/transfer-call?callControlId_Bridge=${transferId}${callControlFlag}`,
       from: callerId.number,
       to: `sip:${targetSipUsername}@sip.telnyx.com`,
       client_state: Buffer.from('Transfer').toString('base64')
@@ -280,6 +284,7 @@ router.post('/transfer', express.json(), async (req, res) => {
 
 router.post('/transfer-call', express.json(), async (req, res) => {
   try {
+    const telnyx = await getOrgTelnyxClient();
     const event_type = req.body.data.event_type;
     const callControlId_Bridge = req.query.callControlId_Bridge;
     const isCallControlIdUsed = req.query.isCallControlIdUsed === 'true';
@@ -351,12 +356,18 @@ router.post('/warm-transfer', express.json(), async (req, res) => {
   let pstnCallControlId;
 
   try {
+    const telnyx = await getOrgTelnyxClient();
+
     if (outboundCCID) {
+      // Outbound call: outboundCCID IS the PSTN leg (stored as bridge_uuid)
       pstnCallControlId = outboundCCID;
+      console.log(`[warm-transfer] Outbound call — PSTN leg: ${pstnCallControlId}, agent WebRTC leg: ${webrtcOutboundCCID || callControlId}`);
     } else if (callControlId) {
+      // Inbound call: callControlId is the agent's bridge leg, look up the original PSTN/queue leg
       const callData = await Voice.findOne({ where: { bridge_uuid: callControlId } });
       if (callData) {
         pstnCallControlId = callData.queue_uuid;
+        console.log(`[warm-transfer] Inbound call — PSTN leg: ${pstnCallControlId}, agent bridge leg: ${callControlId}`);
       } else {
         return res.status(404).json({ error: 'Call session not found' });
       }
@@ -371,17 +382,20 @@ router.post('/warm-transfer', express.json(), async (req, res) => {
     // Get a valid from number — fall back to the Telnyx number from the Voice record
     let fromNumber = callerId?.number;
     if (!fromNumber || fromNumber === 'Unknown') {
-      const voiceRecord = await Voice.findOne({ where: { queue_uuid: pstnCallControlId } })
+      const voiceRecord = await Voice.findOne({ where: { bridge_uuid: pstnCallControlId } })
+        || await Voice.findOne({ where: { queue_uuid: pstnCallControlId } })
         || await Voice.findOne({ where: { bridge_uuid: callControlId } });
       fromNumber = voiceRecord?.telnyx_number || voiceRecord?.destination_number;
     }
 
-    const supervisorWebhookUrl = `https://${env.APP_HOST}:${env.APP_PORT}/api/voice/supervisor-leg?pstnCCID=${encodeURIComponent(pstnCallControlId)}&bridgeCCID=${encodeURIComponent(callControlId || outboundCCID || '')}`;
+    const webhookBase = await getWebhookBaseUrl();
+    const supervisorWebhookUrl = `${webhookBase}/api/voice/supervisor-leg?pstnCCID=${encodeURIComponent(pstnCallControlId)}&bridgeCCID=${encodeURIComponent(callControlId || outboundCCID || '')}`;
 
     const dialBody = {
-      connection_id: env.TELNYX_CONNECTION_ID,
+      connection_id: targetAgent?.appConnectionId,
       to: `sip:${targetSipUsername}@sip.telnyx.com`,
       from: fromNumber,
+      link_to: pstnCallControlId,
       supervise_call_control_id: pstnCallControlId,
       supervisor_role: 'barge',
       webhook_url: supervisorWebhookUrl,
@@ -456,6 +470,7 @@ router.post('/complete-warm-transfer', express.json(), async (req, res) => {
   const { callControlId, outboundCCID, webrtcOutboundCCID } = req.body;
 
   try {
+    const telnyx = await getOrgTelnyxClient();
     const agentLeg = webrtcOutboundCCID || callControlId;
 
     if (agentLeg) {
@@ -484,33 +499,63 @@ router.post('/outbound-webrtc', express.json(), async (req, res) => {
   const data = req.body.data;
 
   try {
+    const telnyx = await getOrgTelnyxClient();
+    const webhookBase = await getWebhookBaseUrl();
+
     if (event_type === 'call.initiated' && direction === 'outgoing' && state === 'parked') {
       broadcast('WebRTC_OutboundCCID', callControlId);
+
+      // Look up calling agent by their SIP credential connection ID
+      const sipConnectionId = data.payload.connection_id;
+      const initiatingAgent = sipConnectionId
+        ? await User.findOne({ where: { webrtcConnectionId: sipConnectionId } })
+        : null;
+      console.log(`[Outbound-WebRTC] initiated: sipConn=${sipConnectionId}, agent=${initiatingAgent?.username || 'NOT FOUND'}, voiceApp=${initiatingAgent?.appConnectionId || 'NONE'}`);
 
       Voice.create({
         telnyx_number: data.payload.from,
         destination_number: data.payload.to,
         direction: data.payload.direction,
         queue_uuid: callControlId,
+        accept_agent: initiatingAgent?.username || null,
       }).catch(error => console.error('Error saving call to database:', error));
 
+      // Answer the WebRTC leg on the SIP credential connection
       await telnyx.calls.actions.answer(callControlId, {
         client_state: Buffer.from(callControlId).toString('base64')
       });
-      console.log('WebRTC Call Answered');
+      console.log(`WebRTC Call Answered (agent: ${initiatingAgent?.username})`);
     }
 
     if (event_type === 'call.answered' && clientState === Buffer.from(callControlId).toString('base64')) {
       const transferId = req.body.data.payload.call_control_id;
 
+      // Look up agent and original caller ID from Voice record (stored on call.initiated)
+      const voiceRecord = await Voice.findOne({ where: { queue_uuid: callControlId } });
+      const callingAgent = voiceRecord?.accept_agent
+        ? await User.findOne({ where: { username: voiceRecord.accept_agent } })
+        : null;
+
+      if (!callingAgent?.appConnectionId) {
+        console.error(`[Outbound-WebRTC] No Voice App for agent ${voiceRecord?.accept_agent}`);
+        return;
+      }
+
+      // Use the from number stored at call.initiated (user's selected caller ID)
+      const callerIdNumber = voiceRecord?.telnyx_number || fromNumber;
+
+      console.log(`[Outbound-WebRTC] Dialing ${toNumber} from ${callerIdNumber} via Voice App ${callingAgent.appConnectionId}`);
+
+      // Dial outbound PSTN leg using the agent's Voice App connection
       await telnyx.calls.dial({
-        connection_id: env.TELNYX_CONNECTION_ID,
+        connection_id: callingAgent.appConnectionId,
         to: toNumber,
-        from: fromNumber,
+        from: callerIdNumber,
+        link_to: transferId,
         client_state: Buffer.from(transferId).toString('base64'),
-        webhook_url: `https://${env.APP_HOST}:${env.APP_PORT}/api/voice/outbound-webrtc-bridge?callControlId_Bridge=${transferId}`,
+        webhook_url: `${webhookBase}/api/voice/outbound-webrtc-bridge?callControlId_Bridge=${transferId}`,
       });
-      console.log('Outbound Call Dialed');
+      console.log('Outbound Call Dialed (linked to agent leg)');
     }
   } catch (error) {
     console.error('Error handling webhook:', error.message);
@@ -528,19 +573,26 @@ router.post('/outbound-webrtc-bridge', express.json(), async (req, res) => {
   const callControl = req.body.data.payload.call_control_id;
   const hangup_source = req.body.data.payload.hangup_source;
   const clientState = req.body.data.payload.client_state;
+  let telnyx;
+  try { telnyx = await getOrgTelnyxClient(); } catch (err) {
+    console.error('[outbound-webrtc-bridge] Telnyx client unavailable:', err.message);
+    return res.status(200).send('OK');
+  }
 
   if (event_type === 'call.answered') {
     broadcast('OutboundCCID', callControl);
     try {
-      await telnyx.calls.actions.bridge(callControlId_Bridge, {
-        call_control_id_to_bridge_with: callControl, park_after_unbridge: 'self'
+      // Bridge on the PSTN/destination leg (callControl) with agent leg in body
+      // park_after_unbridge: 'self' parks the PSTN leg so it can be re-bridged on warm transfer
+      await telnyx.calls.actions.bridge(callControl, {
+        call_control_id_to_bridge_with: callControlId_Bridge, park_after_unbridge: 'self'
       });
 
       await Voice.update(
         { bridge_uuid: callControl },
         { where: { queue_uuid: callControlId_Bridge } }
       );
-      console.log('Call Bridged');
+      console.log('Call Bridged (PSTN leg parked)');
       return res.status(200).send('OK');
     } catch (error) {
       console.error('Error during call bridging:', error.message);
@@ -586,6 +638,80 @@ router.get('/calls', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Error fetching call history:', error.message);
     res.status(500).json({ message: 'Error fetching call history' });
+  }
+});
+
+// GET /api/voice/recordings - List recordings with filters
+router.get('/recordings', authenticate, async (req, res) => {
+  const { page = 1, size = 20, from, to, dateFrom, dateTo, connectionId, callControlId, callLegId, callSessionId, conferenceId, sipCallId } = req.query;
+  try {
+    const params = {
+      'page[number]': parseInt(page),
+      'page[size]': parseInt(size),
+    };
+    const filter = {};
+    if (from) filter.from = from;
+    if (to) filter.to = to;
+    if (connectionId) filter.connection_id = connectionId;
+    if (callControlId) filter.call_control_id = callControlId;
+    if (callLegId) filter.call_leg_id = callLegId;
+    if (callSessionId) filter.call_session_id = callSessionId;
+    if (conferenceId) filter.conference_id = conferenceId;
+    if (sipCallId) filter.sip_call_id = sipCallId;
+    if (dateFrom || dateTo) {
+      filter.created_at = {};
+      if (dateFrom) filter.created_at.gte = dateFrom;
+      if (dateTo) filter.created_at.lte = dateTo;
+    }
+    if (Object.keys(filter).length > 0) params.filter = filter;
+    const telnyx = await getOrgTelnyxClient();
+    const response = await telnyx.recordings.list(params);
+    res.json(response);
+  } catch (error) {
+    console.error('Error fetching recordings:', error.message);
+    res.json({ data: [] });
+  }
+});
+
+// DELETE /api/voice/recordings/:id - Delete a recording
+router.delete('/recordings/:id', authenticate, async (req, res) => {
+  try {
+    const telnyx = await getOrgTelnyxClient();
+    await telnyx.recordings.delete(req.params.id);
+    res.json({ message: 'Recording deleted' });
+  } catch (error) {
+    console.error('Error deleting recording:', error.message);
+    res.status(500).json({ error: 'Failed to delete recording' });
+  }
+});
+
+// GET /api/voice/call-events - List call events for debugging
+router.get('/call-events', authenticate, async (req, res) => {
+  const { page = 1, size = 20, legId, sessionId, from, to, status, type, dateFrom, dateTo } = req.query;
+  try {
+    const params = {
+      'page[number]': parseInt(page),
+      'page[size]': parseInt(size),
+    };
+    const filter = {};
+    if (legId) filter.leg_id = legId;
+    if (sessionId) filter.application_session_id = sessionId;
+    if (from) filter.from = from;
+    if (to) filter.to = to;
+    if (status) filter.status = status;
+    if (type) filter.type = type;
+    if (dateFrom || dateTo) {
+      filter.occurred_at = {};
+      if (dateFrom) filter.occurred_at.gte = dateFrom;
+      if (dateTo) filter.occurred_at.lte = dateTo;
+    }
+    if (Object.keys(filter).length > 0) params.filter = filter;
+    const telnyx = await getOrgTelnyxClient();
+    const response = await telnyx.callEvents.list(params);
+    res.json(response);
+  } catch (error) {
+    console.error('Error fetching call events:', error.message);
+    res.json({ data: [] });
   }
 });
 

@@ -1,10 +1,10 @@
 import { Op } from 'sequelize';
-import Telnyx from 'telnyx';
-import { env } from '../config/env.js';
+import { getOrgTelnyxClient, getWebhookBaseUrl } from './org-telnyx.js';
+import sequelize from '../../config/database.js';
 import User from '../../models/User.js';
 import Voice from '../../models/Voice.js';
-
-const telnyx = new Telnyx({ apiKey: env.TELNYX_API });
+import Conversations from '../../models/Conversations.js';
+import { broadcast } from '../../routes/websocket.js';
 
 /**
  * Try to route a queued call to an available agent.
@@ -13,36 +13,77 @@ const telnyx = new Telnyx({ apiKey: env.TELNYX_API });
  * Returns true if an agent was dialed, false otherwise.
  */
 export async function routeCallToAgent(callControlId, excludeAgents = []) {
-  const where = { status: 'online' };
-  if (excludeAgents.length > 0) {
-    where.sipUsername = { [Op.notIn]: excludeAgents };
-  }
-
-  const availableAgent = await User.findOne({
-    where,
-    order: [['routingPriority', 'ASC']],
-  });
-  if (!availableAgent) {
-    console.log('[Auto-route] No available agents');
-    return false;
-  }
-
   const voiceRecord = await Voice.findOne({ where: { queue_uuid: callControlId } });
   if (!voiceRecord) {
     console.log('[Auto-route] No voice record found for', callControlId);
     return false;
   }
 
+  const queueName = voiceRecord.queue_name || 'General_Queue';
+  console.log(`[Auto-route] Looking for agents in queue: ${queueName}`);
+  const where = {
+    status: 'online',
+    assignedQueue: queueName,
+  };
+  if (excludeAgents.length > 0) {
+    where.sipUsername = { [Op.notIn]: excludeAgents };
+  }
+
+  // Find agents and their active call counts in two queries (no N+1)
+  const candidates = await User.findAll({
+    where,
+    order: [['routingPriority', 'ASC']],
+  });
+
+  if (candidates.length === 0) {
+    console.log(`[Auto-route] No available agents for queue ${queueName}`);
+    return false;
+  }
+
+  // Single query: count active calls per agent (by sipUsername or username)
+  const allIdentifiers = candidates.flatMap(a => [a.sipUsername, a.username]);
+  const activeCalls = await Voice.findAll({
+    attributes: ['accept_agent', [sequelize.fn('COUNT', sequelize.col('uuid')), 'callCount']],
+    where: {
+      accept_agent: { [Op.in]: allIdentifiers },
+      queue_name: { [Op.ne]: null },
+    },
+    group: ['accept_agent'],
+    raw: true,
+  });
+
+  const callCountMap = {};
+  for (const row of activeCalls) {
+    callCountMap[row.accept_agent] = parseInt(row.callCount) || 0;
+  }
+
+  let availableAgent = null;
+  for (const agent of candidates) {
+    const count = (callCountMap[agent.sipUsername] || 0) + (callCountMap[agent.username] || 0);
+    if (count < (agent.maxCalls || 1)) {
+      availableAgent = agent;
+      break;
+    }
+  }
+
+  if (!availableAgent) {
+    console.log(`[Auto-route] No available agents for queue ${queueName}`);
+    return false;
+  }
+
   const fromNumber = voiceRecord.telnyx_number;
-  const webhookUrl = `https://${env.APP_HOST}:${env.APP_PORT}/api/voice/outbound?callControlId_Bridge=${encodeURIComponent(callControlId)}`;
+  const webhookBase = await getWebhookBaseUrl();
+  const webhookUrl = `${webhookBase}/api/voice/outbound?callControlId_Bridge=${encodeURIComponent(callControlId)}`;
 
   console.log(`[Auto-route] Dialing agent ${availableAgent.sipUsername} for call ${callControlId} (from: ${fromNumber})`);
 
   try {
+    const telnyx = await getOrgTelnyxClient();
     await telnyx.calls.dial({
-      connection_id: env.TELNYX_CONNECTION_ID,
+      connection_id: availableAgent.appConnectionId,
       to: `sip:${availableAgent.sipUsername}@sip.telnyx.com`,
       from: fromNumber,
+      link_to: callControlId,
       webhook_url: webhookUrl,
     });
     // Track this agent as tried
@@ -90,6 +131,7 @@ export async function routeToNextAgent(callControlId, declinedAgent) {
   if (!routed) {
     console.log('[Auto-route] No more agents available, caller stays in queue with hold music');
     try {
+      const telnyx = await getOrgTelnyxClient();
       await telnyx.calls.actions.startPlayback(callControlId, {
         audio_url: 'http://com.twilio.music.classical.s3.amazonaws.com/MARKOVICHAMP-Borghestral.mp3',
       });
@@ -119,5 +161,66 @@ export async function routeQueuedCallsToAgent() {
 
   if (!routed) {
     console.log('[Auto-route] Could not route queued call');
+  }
+}
+
+/**
+ * Auto-route an SMS conversation to an available agent.
+ * Uses the same priority-based routing as voice, with maxConversations capacity check.
+ * @param {string} conversationId - The conversation's conversation_id hash
+ * @param {string} queueName - Queue name to match agents (default: General_Queue)
+ */
+export async function routeSmsToAgent(conversationId, queueName = 'General_Queue') {
+  try {
+    const agents = await User.findAll({
+      where: { status: 'online', assignedQueue: queueName, role: 'agent' },
+      order: [['routingPriority', 'ASC']],
+    });
+
+    if (agents.length === 0) {
+      console.log(`[SMS-route] No available agents for conversation ${conversationId}`);
+      return false;
+    }
+
+    // Single query: count active conversations per agent (only recent — last 24h activity)
+    const usernames = agents.map(a => a.username);
+    const activeConvos = await Conversations.findAll({
+      attributes: ['agent_assigned', [sequelize.fn('COUNT', sequelize.col('id')), 'convoCount']],
+      where: {
+        agent_assigned: { [Op.in]: usernames },
+        assigned: true,
+        updatedAt: { [Op.gte]: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+      },
+      group: ['agent_assigned'],
+      raw: true,
+    });
+
+    const convoCountMap = {};
+    for (const row of activeConvos) {
+      convoCountMap[row.agent_assigned] = parseInt(row.convoCount) || 0;
+    }
+
+    for (const agent of agents) {
+      const assignedCount = convoCountMap[agent.username] || 0;
+
+      if (assignedCount < (agent.maxConversations || 5)) {
+        await Conversations.update(
+          { agent_assigned: agent.username, assigned: true },
+          { where: { conversation_id: conversationId } }
+        );
+
+        const conversation = await Conversations.findOne({ where: { conversation_id: conversationId } });
+        broadcast('CONVERSATION_ASSIGNED', conversation);
+
+        console.log(`[SMS-route] Assigned conversation ${conversationId} to ${agent.username} (${assignedCount + 1}/${agent.maxConversations || 5})`);
+        return true;
+      }
+    }
+
+    console.log(`[SMS-route] No available agents for conversation ${conversationId}`);
+    return false;
+  } catch (err) {
+    console.error('[SMS-route] Error routing conversation:', err.message);
+    return false;
   }
 }

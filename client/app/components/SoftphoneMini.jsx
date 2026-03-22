@@ -2,9 +2,10 @@
 
 import { useState, useEffect } from 'react';
 import { useAppSelector, useAppDispatch } from '../../src/store/hooks';
-import { dialDigit, backspace, clearDial } from '../../src/features/call/callSlice';
+import { dialDigit, backspace, clearDial, setCallerNumber } from '../../src/features/call/callSlice';
 import { useCallStore, callStore } from '../../src/lib/call-store';
-import { validatePhoneNumber, toE164, COUNTRY_CODES } from '../../src/lib/phone-utils';
+import { useGetConnectionNumbersQuery } from '../../src/store/api';
+import { validatePhoneNumber, toE164, COUNTRY_CODES, formatPhoneDisplay } from '../../src/lib/phone-utils';
 import CircleButton from './CircleButton';
 
 function formatDuration(seconds) {
@@ -15,10 +16,18 @@ function formatDuration(seconds) {
 
 export default function SoftphoneMini({ onExpand }) {
   const dispatch = useAppDispatch();
-  const { dialNumber, callState, isMuted, isHeld, startTime } = useAppSelector((s) => s.call);
+  const { dialNumber, callState, isMuted, isHeld, startTime, callerNumber } = useAppSelector((s) => s.call);
   const { call } = useCallStore();
+  const { data: connectionNumbers = [] } = useGetConnectionNumbersQuery();
   const [duration, setDuration] = useState(0);
   const [countryCode, setCountryCode] = useState('+1');
+
+  // Auto-select first available number as caller ID
+  useEffect(() => {
+    if (connectionNumbers.length > 0 && !callerNumber) {
+      dispatch(setCallerNumber(connectionNumbers[0].phone_number));
+    }
+  }, [connectionNumbers, callerNumber, dispatch]);
 
   const isActive = callState === 'ACTIVE';
   const isInCall = ['ACTIVE', 'DIALING', 'INCOMING'].includes(callState);
@@ -41,11 +50,14 @@ export default function SoftphoneMini({ onExpand }) {
     const fullNumber = toE164(dialNumber, countryCode);
     const validation = validatePhoneNumber(fullNumber);
     if (!validation.valid) return;
-    client.newCall({
+    const opts = {
       destinationNumber: validation.formatted,
       clientState: 'VGVzdA==',
+      prefetchIceCandidates: true,
       debug: true,
-    });
+    };
+    if (callerNumber) opts.callerNumber = callerNumber;
+    client.newCall(opts);
   };
 
   const handleHangUp = () => { if (call) call.hangup(); };
@@ -56,13 +68,27 @@ export default function SoftphoneMini({ onExpand }) {
 
   return (
     <div className="glass flex items-center gap-1.5 rounded-full px-2 py-1">
-      {/* Country code + phone input (only when not in call) */}
+      {/* From number + Country code + phone input (only when not in call) */}
       {!isInCall && (
         <>
+          {connectionNumbers.length > 0 && (
+            <select
+              value={callerNumber}
+              onChange={(e) => dispatch(setCallerNumber(e.target.value))}
+              className="h-7 w-28 rounded-full bg-white/10 px-1 text-[10px] font-mono text-white outline-none border-none cursor-pointer"
+              title="From number (Caller ID)"
+            >
+              {connectionNumbers.map((n) => (
+                <option key={n.id} value={n.phone_number} className="bg-gray-900 text-white">
+                  {formatPhoneDisplay(n.phone_number)}
+                </option>
+              ))}
+            </select>
+          )}
           <select
             value={countryCode}
             onChange={(e) => setCountryCode(e.target.value)}
-            className="h-7 w-16 rounded-full bg-white/10 px-1 text-[11px] text-white outline-none border-none cursor-pointer"
+            className="h-7 w-20 rounded-full bg-white/10 px-1 text-[11px] text-white outline-none border-none cursor-pointer"
           >
             {COUNTRY_CODES.map((c) => (
               <option key={c.code} value={c.code} className="bg-gray-900 text-white">{c.label}</option>
@@ -73,10 +99,10 @@ export default function SoftphoneMini({ onExpand }) {
             value={dialNumber}
             onChange={(e) => {
               dispatch(clearDial());
-              // Strip + since country code dropdown handles it
               const cleaned = e.target.value.replace(/[^\d*#]/g, '');
               cleaned.split('').forEach((d) => dispatch(dialDigit(d)));
             }}
+            onKeyDown={(e) => { if (e.key === 'Enter' && dialNumber) handleCall(); }}
             placeholder="Number..."
             className="w-24 bg-transparent text-sm text-white placeholder-gray-400 outline-none font-mono"
           />
