@@ -3,8 +3,6 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import GoogleSignIn from '../../components/GoogleSignIn';
-
 export default function RegisterPage() {
   const [formData, setFormData] = useState({
     firstName: '',
@@ -37,8 +35,8 @@ export default function RegisterPage() {
       );
 
       if (!response.ok) {
-        const data = await response.text();
-        throw new Error(data || 'Registration failed');
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.message || data || 'Registration failed');
       }
 
       router.push('/login');
@@ -90,8 +88,6 @@ export default function RegisterPage() {
       >
         {isLoading ? 'Registering...' : 'Register'}
       </button>
-
-      <GoogleSignIn onError={setError} />
 
       <p className="text-center text-sm text-gray-400">
         Already have an account?{' '}

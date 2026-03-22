@@ -10,10 +10,12 @@ import {
   clearDial,
   setIsMuted,
   setIsHeld,
+  setCallerNumber,
 } from '../../src/features/call/callSlice';
 import { useCallStore, callStore } from '../../src/lib/call-store';
+import { useGetConnectionNumbersQuery } from '../../src/store/api';
 import { playDTMF } from '../../src/lib/dtmf';
-import { validatePhoneNumber, toE164, COUNTRY_CODES } from '../../src/lib/phone-utils';
+import { validatePhoneNumber, toE164, COUNTRY_CODES, formatPhoneDisplay } from '../../src/lib/phone-utils';
 import CircleButton from './CircleButton';
 
 const DIAL_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'];
@@ -29,6 +31,7 @@ export default function Softphone({ open, onClose }) {
   const { dialNumber, callState, clientStatus, isMuted, isHeld, startTime, callerInfo, callerNumber } =
     useAppSelector((s) => s.call);
   const { call } = useCallStore();
+  const { data: connectionNumbers = [] } = useGetConnectionNumbersQuery();
 
   const [duration, setDuration] = useState(0);
   const [showKeypad, setShowKeypad] = useState(true);
@@ -40,6 +43,13 @@ export default function Softphone({ open, onClose }) {
 
   const isActive = callState === 'ACTIVE';
   const isInCall = ['ACTIVE', 'DIALING', 'INCOMING'].includes(callState);
+
+  // Auto-select first available number as caller ID
+  useEffect(() => {
+    if (connectionNumbers.length > 0 && !callerNumber) {
+      dispatch(setCallerNumber(connectionNumbers[0].phone_number));
+    }
+  }, [connectionNumbers, callerNumber, dispatch]);
 
   // Duration timer
   useEffect(() => {
@@ -96,6 +106,7 @@ export default function Softphone({ open, onClose }) {
     const opts = {
       destinationNumber: validation.formatted,
       clientState: 'VGVzdA==',
+      prefetchIceCandidates: true,
       debug: true,
     };
     if (callerNumber) opts.callerNumber = callerNumber;
@@ -123,7 +134,7 @@ export default function Softphone({ open, onClose }) {
     <Draggable handle=".drag-handle" bounds="parent" nodeRef={nodeRef}>
       <div
         ref={nodeRef}
-        className="fixed right-6 top-20 z-[1400] w-80 rounded-card glass-dark shadow-2xl"
+        className="fixed right-6 top-20 z-[1400] w-[22rem] rounded-card glass-dark shadow-2xl overflow-hidden"
         style={{ fontFamily: 'Inter, sans-serif' }}
       >
         {/* Header / drag handle */}
@@ -166,12 +177,29 @@ export default function Softphone({ open, onClose }) {
             </div>
           ) : (
             <>
+              {/* From number (caller ID) */}
+              {connectionNumbers.length > 0 && (
+                <div>
+                  <label className="text-[10px] text-gray-500 uppercase tracking-wider">From</label>
+                  <select
+                    value={callerNumber}
+                    onChange={(e) => dispatch(setCallerNumber(e.target.value))}
+                    className="w-full rounded-btn bg-white/10 px-3 py-2 text-sm font-mono text-white outline-none border border-white/10 focus:border-telnyx-green/50 transition-colors"
+                  >
+                    {connectionNumbers.map((n) => (
+                      <option key={n.id} value={n.phone_number} className="bg-gray-900">
+                        {formatPhoneDisplay(n.phone_number)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               {/* Country code + phone number input */}
-              <div className="flex gap-1.5">
+              <div className="flex gap-2 min-w-0">
                 <select
                   value={countryCode}
                   onChange={(e) => { setCountryCode(e.target.value); setDialError(''); }}
-                  className="w-20 rounded-btn bg-white/10 px-2 py-3 text-sm text-white outline-none border border-white/10 focus:border-telnyx-green/50 transition-colors"
+                  className="w-24 flex-shrink-0 rounded-btn bg-white/10 px-2 py-3 text-sm text-white outline-none border border-white/10 focus:border-telnyx-green/50 transition-colors"
                 >
                   {COUNTRY_CODES.map((c) => (
                     <option key={c.code} value={c.code} className="bg-gray-900">{c.label}</option>
@@ -183,11 +211,11 @@ export default function Softphone({ open, onClose }) {
                   onChange={(e) => {
                     setDialError('');
                     dispatch(clearDial());
-                    // Strip + since country code dropdown handles it
                     e.target.value.replace(/[^\d*#]/g, '').split('').forEach((d) => dispatch(dialDigit(d)));
                   }}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && dialNumber) handleCall(); }}
                   placeholder="Phone number"
-                  className={`flex-1 rounded-btn bg-white/10 px-3 py-3 text-center font-mono text-lg text-white placeholder-gray-500 outline-none border transition-colors ${
+                  className={`flex-1 min-w-0 rounded-btn bg-white/10 px-3 py-3 text-center font-mono text-lg text-white placeholder-gray-500 outline-none border transition-colors ${
                     dialError ? 'border-red-400/60' : 'border-white/10 focus:border-telnyx-green/50'
                   }`}
                 />
@@ -198,8 +226,37 @@ export default function Softphone({ open, onClose }) {
             </>
           )}
 
-          {/* Call controls */}
-          <div className="flex items-center justify-center gap-3">
+          {/* DTMF Keypad */}
+          <div>
+            <div className="grid grid-cols-3 gap-1.5">
+              {DIAL_KEYS.map((key) => (
+                <button
+                  key={key}
+                  onClick={() => handleDialKey(key)}
+                  className="rounded-btn py-3 text-lg font-medium text-white bg-white/10 hover:bg-white/20 active:bg-white/30 transition-colors"
+                >
+                  {key}
+                </button>
+              ))}
+            </div>
+            <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+              <button
+                onClick={() => dispatch(backspace())}
+                className="rounded-btn py-2 text-xs text-gray-400 bg-white/5 hover:bg-white/10 transition-colors"
+              >
+                Backspace
+              </button>
+              <button
+                onClick={() => dispatch(clearDial())}
+                className="rounded-btn py-2 text-xs text-gray-400 bg-white/5 hover:bg-white/10 transition-colors"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+
+          {/* Call controls — below keypad */}
+          <div className="flex items-center justify-center gap-3 pt-1">
             {callState === 'INCOMING' ? (
               <>
                 <CircleButton variant="green" size={48} onClick={handleAnswer} title="Answer" pulse>
@@ -253,44 +310,6 @@ export default function Softphone({ open, onClose }) {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
                 </svg>
               </CircleButton>
-            )}
-          </div>
-
-          {/* Collapsible DTMF Keypad */}
-          <div>
-            <button
-              onClick={() => setShowKeypad(!showKeypad)}
-              className="flex items-center gap-1 text-xs text-gray-400 hover:text-white transition-colors"
-            >
-              <svg className={`h-3 w-3 transition-transform ${showKeypad ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-              </svg>
-              Keypad
-            </button>
-            {showKeypad && (
-              <div className="mt-2 grid grid-cols-3 gap-1.5">
-                {DIAL_KEYS.map((key) => (
-                  <button
-                    key={key}
-                    onClick={() => handleDialKey(key)}
-                    className="rounded-btn py-2.5 text-base font-medium text-white bg-white/10 hover:bg-white/20 active:bg-white/30 transition-colors"
-                  >
-                    {key}
-                  </button>
-                ))}
-                <button
-                  onClick={() => dispatch(backspace())}
-                  className="col-span-2 rounded-btn py-2 text-xs text-gray-400 bg-white/5 hover:bg-white/10 transition-colors"
-                >
-                  Backspace
-                </button>
-                <button
-                  onClick={() => dispatch(clearDial())}
-                  className="rounded-btn py-2 text-xs text-gray-400 bg-white/5 hover:bg-white/10 transition-colors"
-                >
-                  Clear
-                </button>
-              </div>
             )}
           </div>
 

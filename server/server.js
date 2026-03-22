@@ -14,19 +14,21 @@ import userRoutes from './routes/userRoutes.js';
 import voiceRoutes from './routes/voiceRoutes.js';
 import conversationRoutes from './routes/conversationRoutes.js';
 import ivrRoutes from './routes/ivrRoutes.js';
+import adminRoutes from './routes/adminRoutes.js';
 import seedDatabase from './seeds/seed.js';
 import { initWebSocket } from './routes/websocket.js';
 
 // Import all models so sync creates their tables
 import './models/CallRecord.js';
 import './models/IvrFlow.js';
+import './models/Settings.js';
 
 const app = express();
 app.set('trust proxy', 1);
 
 let server;
-const TLS_KEY_PATH = '/etc/letsencrypt/live/telnyx.solutions/privkey.pem';
-const TLS_CERT_PATH = '/etc/letsencrypt/live/telnyx.solutions/fullchain.pem';
+const TLS_KEY_PATH = '/etc/letsencrypt/live/app.telnyx.solutions/privkey.pem';
+const TLS_CERT_PATH = '/etc/letsencrypt/live/app.telnyx.solutions/fullchain.pem';
 
 if (fs.existsSync(TLS_KEY_PATH) && fs.existsSync(TLS_CERT_PATH)) {
   try {
@@ -104,13 +106,14 @@ app.use('/api/users', userRoutes);
 app.use('/api/conversations', conversationRoutes);
 app.use('/api/voice', voiceRoutes);
 app.use('/api/ivr', ivrRoutes);
+app.use('/api/admin', adminRoutes);
 
 const PORT = process.env.PORT || 3000;
 
 // Sync the database and then start the server
 const init = async () => {
   try {
-    await sequelize.sync({ alter: true });
+    await sequelize.sync();
     // Seed only if no users exist (first run)
     const User = (await import('./models/User.js')).default;
     const userCount = await User.count();

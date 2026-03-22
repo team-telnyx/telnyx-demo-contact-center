@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { env } from '../config/env.js';
+import { getWebhookBaseUrl } from './org-telnyx.js';
 import Voice from '../../models/Voice.js';
 import TelnyxService from './telnyx.service.js';
 
@@ -16,7 +17,8 @@ const VoiceService = {
 
   async acceptCall(sipUsername, callControlId, callerId) {
     try {
-      const webhookUrlWithParam = `https://${env.APP_HOST}:${env.APP_PORT}/api/voice/outbound?callControlId_Bridge=${encodeURIComponent(callControlId)}`;
+      const webhookBase = await getWebhookBaseUrl();
+      const webhookUrlWithParam = `${webhookBase}/api/voice/outbound?callControlId_Bridge=${encodeURIComponent(callControlId)}`;
 
       await TelnyxService.dial(
         `sip:${sipUsername}@sip.telnyx.com`,
@@ -62,7 +64,8 @@ const VoiceService = {
     }
 
     const callControlFlag = isCallControlIdUsed ? '&isCallControlIdUsed=true' : '';
-    const webhookUrl = `https://${env.APP_HOST}:${env.APP_PORT}/api/voice/transfer-call?callControlId_Bridge=${transferId}${callControlFlag}`;
+    const webhookBase = await getWebhookBaseUrl();
+    const webhookUrl = `${webhookBase}/api/voice/transfer-call?callControlId_Bridge=${transferId}${callControlFlag}`;
 
     try {
       const response = await TelnyxService.transfer(
@@ -100,6 +103,10 @@ const VoiceService = {
         }
       }
 
+      const Settings = (await import('../../models/Settings.js')).default;
+      const apiKeyRow = await Settings.findByPk('orgTelnyxApiKey');
+      const orgApiKey = apiKeyRow?.value || process.env.TELNYX_API;
+
       await axios.post(
         `https://api.telnyx.com/v2/calls/${webrtcOutboundCCID}/actions/dial`,
         {
@@ -110,7 +117,7 @@ const VoiceService = {
         },
         {
           headers: {
-            'Authorization': `Bearer ${env.TELNYX_API}`,
+            'Authorization': `Bearer ${orgApiKey}`,
           },
         }
       );

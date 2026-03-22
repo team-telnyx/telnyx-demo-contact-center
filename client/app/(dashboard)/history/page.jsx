@@ -25,14 +25,14 @@ function formatDate(dateString) {
 
 function StatusBadge({ status }) {
   const colorMap = {
-    completed: 'bg-green-100 text-green-800',
-    active: 'bg-yellow-100 text-yellow-800',
-    missed: 'bg-red-100 text-red-800',
-    failed: 'bg-red-100 text-red-800',
-    queued: 'bg-gray-100 text-gray-800',
-    ringing: 'bg-blue-100 text-blue-800',
+    completed: 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300',
+    active: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300',
+    missed: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
+    failed: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
+    queued: 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
+    ringing: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300',
   };
-  const classes = colorMap[status] || 'bg-gray-100 text-gray-800';
+  const classes = colorMap[status] || 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300';
   return (
     <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${classes}`}>
       {status}
@@ -79,21 +79,21 @@ export default function HistoryPage() {
     <div className="flex h-full flex-col p-6">
       {/* Header */}
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Call History</h1>
-        <p className="mt-1 text-sm text-gray-500">View and filter call detail records</p>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Call History</h1>
+        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">View and filter call detail records</p>
       </div>
 
       {/* Filter Bar */}
       <div className="mb-4 flex flex-wrap items-center gap-4">
         <div>
-          <label htmlFor="direction-filter" className="mr-2 text-sm font-medium text-gray-700">
+          <label htmlFor="direction-filter" className="mr-2 text-sm font-medium text-gray-700 dark:text-gray-300">
             Direction:
           </label>
           <select
             id="direction-filter"
             value={direction}
             onChange={(e) => { setDirection(e.target.value); setPage(1); }}
-            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-telnyx-green focus:outline-none focus:ring-1 focus:ring-telnyx-green"
+            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-telnyx-green focus:outline-none focus:ring-1 focus:ring-telnyx-green dark:border-gray-600 dark:bg-gray-700 dark:text-white"
           >
             <option value="">All</option>
             <option value="inbound">Inbound</option>
@@ -101,14 +101,14 @@ export default function HistoryPage() {
           </select>
         </div>
         <div>
-          <label htmlFor="status-filter" className="mr-2 text-sm font-medium text-gray-700">
+          <label htmlFor="status-filter" className="mr-2 text-sm font-medium text-gray-700 dark:text-gray-300">
             Status:
           </label>
           <select
             id="status-filter"
             value={status}
             onChange={(e) => { setStatus(e.target.value); setPage(1); }}
-            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-telnyx-green focus:outline-none focus:ring-1 focus:ring-telnyx-green"
+            className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm shadow-sm focus:border-telnyx-green focus:outline-none focus:ring-1 focus:ring-telnyx-green dark:border-gray-600 dark:bg-gray-700 dark:text-white"
           >
             <option value="">All</option>
             <option value="completed">Completed</option>
@@ -122,7 +122,7 @@ export default function HistoryPage() {
       </div>
 
       {/* Table */}
-      <div className="flex-1 overflow-auto rounded-lg border border-gray-200 bg-white shadow-sm">
+      <div className="flex-1 overflow-auto rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
         {isLoading ? (
           <div className="flex h-64 items-center justify-center">
             <div className="text-center">
@@ -136,31 +136,31 @@ export default function HistoryPage() {
               <svg className="mx-auto mb-3 h-12 w-12 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              <p className="text-sm font-medium text-gray-900">No call records found</p>
+              <p className="text-sm font-medium text-gray-900 dark:text-white">No call records found</p>
               <p className="mt-1 text-xs text-gray-500">Try adjusting your filters</p>
             </div>
           </div>
         ) : (
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
+          <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+            <thead className="bg-gray-50 dark:bg-gray-900">
               <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Direction</th>
-                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">From</th>
-                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">To</th>
-                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Duration</th>
-                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Status</th>
-                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Date</th>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Direction</th>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">From</th>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">To</th>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Duration</th>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Status</th>
+                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">Date</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-200 bg-white">
+            <tbody className="divide-y divide-gray-200 bg-white dark:divide-gray-700 dark:bg-gray-800">
               {records.map((record) => (
-                <tr key={record.id} className="hover:bg-gray-50 transition-colors">
+                <tr key={record.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
                   <td className="whitespace-nowrap px-4 py-3">
                     <DirectionIcon direction={record.direction} />
                   </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900">{record.fromNumber}</td>
-                  <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900">{record.toNumber}</td>
-                  <td className="whitespace-nowrap px-4 py-3 text-sm font-mono text-gray-700">{formatDuration(record.durationSeconds)}</td>
+                  <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900 dark:text-white">{record.fromNumber}</td>
+                  <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-900 dark:text-white">{record.toNumber}</td>
+                  <td className="whitespace-nowrap px-4 py-3 text-sm font-mono text-gray-700 dark:text-gray-300">{formatDuration(record.durationSeconds)}</td>
                   <td className="whitespace-nowrap px-4 py-3">
                     <StatusBadge status={record.status} />
                   </td>
@@ -175,7 +175,7 @@ export default function HistoryPage() {
       {/* Pagination */}
       {records.length > 0 && (
         <div className="mt-4 flex items-center justify-between">
-          <p className="text-sm text-gray-700">
+          <p className="text-sm text-gray-700 dark:text-gray-300">
             Showing <span className="font-medium">{(meta.page - 1) * meta.limit + 1}</span> to{' '}
             <span className="font-medium">{Math.min(meta.page * meta.limit, meta.total)}</span> of{' '}
             <span className="font-medium">{meta.total}</span> results
@@ -184,17 +184,17 @@ export default function HistoryPage() {
             <button
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={page <= 1}
-              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
             >
               Previous
             </button>
-            <span className="flex items-center px-3 text-sm text-gray-700">
+            <span className="flex items-center px-3 text-sm text-gray-700 dark:text-gray-300">
               Page {meta.page} of {totalPages}
             </span>
             <button
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
               disabled={page >= totalPages}
-              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
             >
               Next
             </button>

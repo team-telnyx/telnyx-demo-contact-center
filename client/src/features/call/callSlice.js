@@ -21,6 +21,7 @@ const initialState = {
   toNumber: null,
   fromNumber: null,
   callerNumber: '',
+  clientError: null,
 };
 
 const callSlice = createSlice({
@@ -41,6 +42,10 @@ const callSlice = createSlice({
     },
     setClientStatus(state, action) {
       state.clientStatus = action.payload;
+      if (action.payload === 'READY') state.clientError = null;
+    },
+    setClientError(state, action) {
+      state.clientError = action.payload;
     },
     setDirection(state, action) {
       state.direction = action.payload;
@@ -104,6 +109,7 @@ export const {
   clearDial,
   setCallState,
   setClientStatus,
+  setClientError,
   setDirection,
   setCallerInfo,
   setIsMuted,

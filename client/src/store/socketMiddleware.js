@@ -117,7 +117,20 @@ function connectSocket(storeApi, token) {
   });
 
   socket.on('AGENT_STATUS_CHANGED', () => {
-    storeApi.dispatch(api.util.invalidateTags(['Agents']));
+    storeApi.dispatch(api.util.invalidateTags(['Agents', 'AdminMetrics', 'AdminUsers']));
+  });
+
+  // Admin user management events (real-time updates for admin dashboards)
+  socket.on('USER_CREATED', () => {
+    storeApi.dispatch(api.util.invalidateTags(['AdminUsers', 'AdminMetrics', 'Agents']));
+  });
+
+  socket.on('USER_UPDATED', () => {
+    storeApi.dispatch(api.util.invalidateTags(['AdminUsers', 'AdminMetrics', 'Agents']));
+  });
+
+  socket.on('USER_DELETED', () => {
+    storeApi.dispatch(api.util.invalidateTags(['AdminUsers', 'AdminMetrics', 'Agents']));
   });
 
   // Messaging events

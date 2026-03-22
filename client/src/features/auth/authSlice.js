@@ -101,6 +101,7 @@ const authSlice = createSlice({
           const decoded = jwtDecode(token);
           state.token = token;
           state.username = decoded.username || null;
+          state.role = decoded.role || 'agent';
         } catch {
           localStorage.removeItem('token');
         }
@@ -116,6 +117,7 @@ const authSlice = createSlice({
       if (p.appConnectionId !== undefined) state.appConnectionId = p.appConnectionId;
       if (p.webrtcConnectionId !== undefined) state.webrtcConnectionId = p.webrtcConnectionId;
       if (p.onboardingComplete !== undefined) state.onboardingComplete = p.onboardingComplete;
+      if (p.role !== undefined) state.role = p.role;
     },
   },
   extraReducers: (builder) => {
@@ -130,6 +132,7 @@ const authSlice = createSlice({
         const decoded = jwtDecode(token);
         state.token = token;
         state.username = decoded.username || null;
+        state.role = action.payload.role || decoded.role || 'agent';
         state.firstName = firstName || null;
         state.lastName = lastName || null;
         state.avatarUrl = avatarUrl || null;
@@ -159,6 +162,7 @@ const authSlice = createSlice({
         state.lastName = lastName || state.lastName;
         state.avatarUrl = avatar || state.avatarUrl;
         state.agentStatus = status || state.agentStatus;
+        if (action.payload.role) state.role = action.payload.role;
       });
   },
 });

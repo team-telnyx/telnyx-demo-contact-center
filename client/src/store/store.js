@@ -1,4 +1,5 @@
 import { configureStore } from '@reduxjs/toolkit';
+import { setupListeners } from '@reduxjs/toolkit/query';
 import authReducer from '../features/auth/authSlice';
 import callReducer from '../features/call/callSlice';
 import socketReducer from '../features/socket/socketSlice';
@@ -17,5 +18,8 @@ export const store = configureStore({
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware().concat(api.middleware, socketMiddleware),
 });
+
+// Enable refetchOnFocus and refetchOnReconnect
+setupListeners(store.dispatch);
 
 export default store;

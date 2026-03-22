@@ -2,13 +2,11 @@ import express from 'express';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { Op } from 'sequelize';
-import { env } from '../src/config/env.js';
-import Telnyx from 'telnyx';
+import { getOrgTelnyxClient, getWebhookBaseUrl } from '../src/services/org-telnyx.js';
 import Conversations from '../models/Conversations.js';
 import Messages from '../models/Messages.js';
 import { broadcast, sendToUser } from './websocket.js';
-
-const telnyx = new Telnyx({ apiKey: env.TELNYX_API });
+import { routeSmsToAgent } from '../src/services/auto-route.js';
 const router = express.Router();
 
 function hash(arr) {
@@ -34,11 +32,12 @@ if (!existsSync(UPLOAD_DIR)) mkdirSync(UPLOAD_DIR, { recursive: true });
  */
 async function downloadAndStore(remoteUrl, contentType) {
   try {
+    const webhookBase = await getWebhookBaseUrl();
     const response = await axios.get(remoteUrl, { responseType: 'arraybuffer' });
     const ext = (contentType || 'application/octet-stream').split('/')[1]?.replace('jpeg', 'jpg') || 'bin';
     const name = `${randomUUID()}.${ext}`;
     writeFileSync(`${UPLOAD_DIR}/${name}`, Buffer.from(response.data));
-    const localUrl = `https://${env.APP_HOST}:${env.APP_PORT}/api/conversations/media/${name}`;
+    const localUrl = `${webhookBase}/api/conversations/media/${name}`;
     return { url: localUrl, content_type: contentType };
   } catch (err) {
     console.error('[Media] Failed to download:', remoteUrl, err.message);
@@ -51,11 +50,12 @@ router.post('/upload-media', async (req, res) => {
   if (!data) return res.status(400).json({ error: 'No data provided' });
 
   try {
+    const webhookBase = await getWebhookBaseUrl();
     const ext = (filename || 'file').split('.').pop() || 'bin';
     const name = `${randomUUID()}.${ext}`;
     const base64 = data.replace(/^data:[^;]+;base64,/, '');
     writeFileSync(`${UPLOAD_DIR}/${name}`, base64, 'base64');
-    const url = `https://${env.APP_HOST}:${env.APP_PORT}/api/conversations/media/${name}`;
+    const url = `${webhookBase}/api/conversations/media/${name}`;
     res.json({ url, filename: name, content_type });
   } catch (err) {
     console.error('Upload error:', err.message);
@@ -145,6 +145,7 @@ router.post('/composeMessage', async (req, res) => {
       sendBody.media_urls = mediaUrls;
       sendBody.type = 'MMS';
     }
+    const telnyx = await getOrgTelnyxClient();
     const telnyxResponse = await telnyx.messages.send(sendBody);
 
     const telnyxMessageId = telnyxResponse?.data?.id || null;
@@ -259,6 +260,13 @@ router.post('/webhook', async (req, res) => {
       { last_message: messageText },
       { where: { conversation_id: conversation.conversation_id } }
     );
+
+    // Auto-route unassigned conversations to available agents
+    if (!conversation.assigned) {
+      routeSmsToAgent(conversation.conversation_id).catch(err =>
+        console.error('[SMS-route] Error auto-routing:', err.message)
+      );
+    }
   }
 
   // --- Outbound delivery status updates ---

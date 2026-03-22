@@ -4,13 +4,12 @@ import jwt from 'jsonwebtoken';
 import axios from 'axios';
 import { OAuth2Client } from 'google-auth-library';
 import { env } from '../src/config/env.js';
-import Telnyx from 'telnyx';
 import User from '../models/User.js';
 import { encrypt, decrypt } from '../src/utils/encryption.js';
 import { authenticate } from '../src/middleware/auth.js';
 import { routeQueuedCallsToAgent } from '../src/services/auto-route.js';
+import { broadcast } from './websocket.js';
 
-const telnyx = new Telnyx({ apiKey: env.TELNYX_API });
 const googleClient = env.GOOGLE_CLIENT_ID ? new OAuth2Client(env.GOOGLE_CLIENT_ID) : null;
 const router = express.Router();
 
@@ -35,37 +34,99 @@ const generateRandomString = (length, type = 'alphanumeric') => {
  * Creates an OVP + credential connection.
  * Returns { connectionId }
  */
-async function provisionSipCredentials(sipUsername, sipPassword, userApiKey) {
-  const userTelnyx = new Telnyx({ apiKey: userApiKey });
+async function provisionAgentConnections(sipUsername, sipPassword, prefix = 'agent') {
+  const { getOrgTelnyxClient, getWebhookBaseUrl } = await import('../src/services/org-telnyx.js');
+  const orgTelnyx = await getOrgTelnyxClient();
 
-  const ovp = await userTelnyx.outboundVoiceProfiles.create({
-    name: `OVP_${sipUsername}`,
-    enabled: true,
-  });
-  const profileId = ovp.data?.id;
+  const webhookBase = getWebhookBaseUrl();
+  const voiceWebhookUrl = `${webhookBase}/api/voice/webhook`;
+  const webrtcWebhookUrl = `${webhookBase}/api/voice/outbound-webrtc`;
+  const ts = Date.now().toString(36);
 
-  const conn = await userTelnyx.credentialConnections.create({
-    connection_name: `SIPConnection_${sipUsername}`,
-    user_name: sipUsername,
-    password: sipPassword,
-    webhook_event_url: `https://${env.APP_HOST}:${env.APP_PORT}/api/voice/outbound-webrtc-bridge`,
-    outbound: {
-      call_parking_enabled: true,
-      outbound_voice_profile_id: profileId,
-    },
-  });
+  // Create Outbound Voice Profile (all destinations enabled)
+  let outboundVoiceProfileId = null;
+  try {
+    const ovp = await orgTelnyx.outboundVoiceProfiles.create({
+      name: `${prefix}_OVP_${ts}_${sipUsername}`,
+      enabled: true,
+      whitelisted_destinations: ['US', 'CA', 'GB', 'AU', 'DE', 'FR', 'ES', 'IT', 'NL', 'BR', 'MX', 'IN', 'JP', 'KR', 'SG', 'HK', 'NZ', 'IE', 'SE', 'NO', 'DK', 'FI', 'PL', 'AT', 'CH', 'BE', 'PT', 'CZ', 'IL', 'ZA'],
+    });
+    outboundVoiceProfileId = ovp.data?.id;
+    console.log(`[Provision] Created OVP for ${sipUsername}: ${outboundVoiceProfileId}`);
+  } catch (err) {
+    console.error(`[Provision] OVP failed for ${sipUsername}:`, err.raw?.errors?.[0]?.detail || err.message);
+  }
 
-  const connectionId = conn.data?.id || null;
-  console.log(`[Provision] Created SIP connection for ${sipUsername} (connection: ${connectionId}) using user's API key`);
-  return { connectionId };
+  // Create Voice API Application + link OVP
+  let appConnectionId = null;
+  try {
+    const app = await orgTelnyx.callControlApplications.create({
+      application_name: `${prefix}_VoiceApp_${ts}_${sipUsername}`,
+      webhook_event_url: voiceWebhookUrl,
+      active: true,
+    });
+    appConnectionId = app.data?.id;
+    // Link OVP to the Voice App
+    if (outboundVoiceProfileId && appConnectionId) {
+      await orgTelnyx.callControlApplications.update(appConnectionId, {
+        outbound: { outbound_voice_profile_id: outboundVoiceProfileId },
+      });
+    }
+    console.log(`[Provision] Created Voice App for ${sipUsername}: ${appConnectionId} (OVP: ${outboundVoiceProfileId})`);
+  } catch (err) {
+    console.error(`[Provision] Voice App failed for ${sipUsername}:`, err.raw?.errors?.[0]?.detail || err.message);
+  }
+
+  // Create SIP Credential Connection (park outbound calls enabled)
+  let webrtcConnectionId = null;
+  try {
+    const connBody = {
+      connection_name: `${prefix}_SIPConn_${ts}_${sipUsername}`,
+      user_name: sipUsername,
+      password: sipPassword,
+      webhook_event_url: webrtcWebhookUrl,
+      sip_uri_calling_preference: 'internal',
+      outbound: { call_parking_enabled: true },
+    };
+    if (outboundVoiceProfileId) connBody.outbound.outbound_voice_profile_id = outboundVoiceProfileId;
+    const conn = await orgTelnyx.credentialConnections.create(connBody);
+    webrtcConnectionId = conn.data?.id;
+    console.log(`[Provision] Created SIP Connection for ${sipUsername}: ${webrtcConnectionId}`);
+  } catch (err) {
+    console.error(`[Provision] SIP Connection failed for ${sipUsername}:`, err.raw?.errors?.[0]?.detail || err.message);
+  }
+
+  // Create Messaging Profile (all destinations enabled)
+  let messagingProfileId = null;
+  try {
+    const mp = await orgTelnyx.messagingProfiles.create({
+      name: `${prefix}_MsgProfile_${ts}_${sipUsername}`,
+      enabled: true,
+      whitelisted_destinations: ['*'],
+    });
+    messagingProfileId = mp.data?.id;
+    console.log(`[Provision] Created Messaging Profile for ${sipUsername}: ${messagingProfileId}`);
+  } catch (err) {
+    console.error(`[Provision] Messaging Profile failed for ${sipUsername}:`, err.raw?.errors?.[0]?.detail || err.message);
+  }
+
+  return { appConnectionId, webrtcConnectionId, outboundVoiceProfileId, messagingProfileId };
 }
 
 router.post('/register', async (req, res) => {
+  // Check org API key is configured before allowing registration
+  const Settings = (await import('../models/Settings.js')).default;
+  const orgKey = await Settings.findByPk('orgTelnyxApiKey');
+  if (!orgKey?.value) {
+    return res.status(503).json({ message: 'Registration is unavailable. An administrator must configure the organization API key before agent accounts can be created.' });
+  }
+
   const { firstName, lastName, phoneNumber, avatar, username, password } = req.body;
 
-  // Generate SIP credentials
-  const sipUsername = generateRandomString(Math.floor(Math.random() * 29) + 4);
-  const sipPassword = generateRandomString(Math.floor(Math.random() * 121) + 8);
+  // Generate SIP credentials with agent_ prefix + ULID
+  const ulid = Date.now().toString(36).toUpperCase() + generateRandomString(8);
+  const sipUsername = `agent${ulid}`;
+  const sipPassword = generateRandomString(32);
 
   const salt = await bcrypt.genSalt(10);
   const hashedPassword = await bcrypt.hash(password, salt);
@@ -85,11 +146,12 @@ router.post('/register', async (req, res) => {
       status: false
     });
 
-    const { connectionId } = await provisionSipCredentials(sipUsername, sipPassword, env.TELNYX_API);
-    if (connectionId) {
-      newUser.webrtcConnectionId = connectionId;
-      await newUser.save();
-    }
+    const provisioned = await provisionAgentConnections(sipUsername, sipPassword, 'agent');
+    if (provisioned.appConnectionId) newUser.appConnectionId = provisioned.appConnectionId;
+    if (provisioned.webrtcConnectionId) newUser.webrtcConnectionId = provisioned.webrtcConnectionId;
+    if (provisioned.messagingProfileId) newUser.messagingProfileId = provisioned.messagingProfileId;
+    if (provisioned.outboundVoiceProfileId) newUser.outboundVoiceProfileId = provisioned.outboundVoiceProfileId;
+    await newUser.save();
 
     res.status(200).json("User registered with SIP connection");
   } catch (err) {
@@ -127,10 +189,14 @@ router.get('/user_data/:username', async (req, res) => {
         onboardingComplete: !!user.onboardingComplete,
       };
       if (isSelf) {
+        response.role = user.role || 'agent';
         response.telnyxApiKey = user.telnyxApiKey || null;
         response.telnyxPublicKey = user.telnyxPublicKey || null;
+        response.assignedQueue = user.assignedQueue || 'General_Queue';
         response.appConnectionId = user.appConnectionId || null;
         response.webrtcConnectionId = user.webrtcConnectionId || null;
+        response.outboundVoiceProfileId = user.outboundVoiceProfileId || null;
+        response.messagingProfileId = user.messagingProfileId || null;
       }
       res.status(200).json(response);
     } else {
@@ -164,7 +230,7 @@ router.post('/login', async (req, res) => {
       const validated = await bcrypt.compare(password, user.password);
       if (!validated) return res.status(400).json("Wrong credentials");
       // Generate a token
-      const token = jwt.sign({ username: user.username }, env.JWT_SECRET, { expiresIn: '1h' });
+      const token = jwt.sign({ username: user.username, role: user.role || 'agent' }, env.JWT_SECRET, { expiresIn: '1h' });
       req.session.user = user;
 
       let avatarUrl = null;
@@ -175,6 +241,7 @@ router.post('/login', async (req, res) => {
       // Set user online on login
       user.status = 'online';
       await user.save();
+      broadcast('AGENT_STATUS_CHANGED', { username: user.username, status: 'online', firstName: user.firstName, lastName: user.lastName, assignedQueue: user.assignedQueue });
 
       res.status(200).json({
         token,
@@ -182,6 +249,7 @@ router.post('/login', async (req, res) => {
         lastName: user.lastName,
         avatarUrl,
         agentStatus: user.status,
+        role: user.role || 'agent',
         telnyxApiKey: user.telnyxApiKey || null,
         telnyxPublicKey: user.telnyxPublicKey || null,
         appConnectionId: user.appConnectionId || null,
@@ -230,9 +298,17 @@ router.post('/google-auth', async (req, res) => {
         user.googleId = googleId;
         await user.save();
       } else {
+        // Check org API key before allowing SSO registration
+        const Settings = (await import('../models/Settings.js')).default;
+        const orgKey = await Settings.findByPk('orgTelnyxApiKey');
+        if (!orgKey?.value) {
+          return res.status(503).json({ message: 'Registration is unavailable. An administrator must configure the organization API key before agent accounts can be created.' });
+        }
+
         // Auto-register new Google user with SIP credentials
-        const sipUsername = generateRandomString(Math.floor(Math.random() * 29) + 4);
-        const sipPassword = generateRandomString(Math.floor(Math.random() * 121) + 8);
+        const ssoUlid = Date.now().toString(36).toUpperCase() + generateRandomString(8);
+        const sipUsername = `agent${ssoUlid}`;
+        const sipPassword = generateRandomString(32);
         const encryptedSipPassword = encrypt(sipPassword);
 
         user = await User.create({
@@ -244,16 +320,28 @@ router.post('/google-auth', async (req, res) => {
           sipPassword: encryptedSipPassword,
           status: 'online',
         });
-        // SIP connection will be provisioned when user adds their API key in profile
+
+        // Auto-provision all resources using org API key
+        try {
+          const provisioned = await provisionAgentConnections(sipUsername, sipPassword, 'agent');
+          if (provisioned.appConnectionId) user.appConnectionId = provisioned.appConnectionId;
+          if (provisioned.webrtcConnectionId) user.webrtcConnectionId = provisioned.webrtcConnectionId;
+          if (provisioned.messagingProfileId) user.messagingProfileId = provisioned.messagingProfileId;
+          if (provisioned.outboundVoiceProfileId) user.outboundVoiceProfileId = provisioned.outboundVoiceProfileId;
+          await user.save();
+        } catch (provErr) {
+          console.error('[Google SSO] Provisioning failed:', provErr.message);
+        }
       }
     }
 
     // Set user online
     user.status = 'online';
     await user.save();
+    broadcast('AGENT_STATUS_CHANGED', { username: user.username, status: 'online', firstName: user.firstName, lastName: user.lastName, assignedQueue: user.assignedQueue });
 
     // Generate JWT
-    const token = jwt.sign({ username: user.username }, env.JWT_SECRET, { expiresIn: '1h' });
+    const token = jwt.sign({ username: user.username, role: user.role || 'agent' }, env.JWT_SECRET, { expiresIn: '1h' });
 
     let avatarUrl = null;
     if (user.avatar) {
@@ -268,6 +356,7 @@ router.post('/google-auth', async (req, res) => {
       lastName: user.lastName,
       avatarUrl,
       agentStatus: user.status,
+      role: user.role || 'agent',
       telnyxApiKey: user.telnyxApiKey || null,
       telnyxPublicKey: user.telnyxPublicKey || null,
       appConnectionId: user.appConnectionId || null,
@@ -304,7 +393,7 @@ router.put('/update/:username', authenticate, async (req, res) => {
   const { sipUsername, sipPassword } = req.body;
   const { telnyxApiKey, telnyxPublicKey } = req.body;
   const { appConnectionId, webrtcConnectionId } = req.body;
-  const { onboardingComplete } = req.body;
+  const { onboardingComplete, assignedQueue } = req.body;
 
   try {
     const user = await User.findOne({ where: { username } });
@@ -328,6 +417,7 @@ router.put('/update/:username', authenticate, async (req, res) => {
       if (appConnectionId !== undefined) user.appConnectionId = appConnectionId;
       if (webrtcConnectionId !== undefined) user.webrtcConnectionId = webrtcConnectionId;
       if (onboardingComplete !== undefined) user.onboardingComplete = onboardingComplete;
+      if (assignedQueue !== undefined) user.assignedQueue = assignedQueue;
       if (avatar) {
         try {
           const base64Data = avatar.split(",")[1];
@@ -342,25 +432,26 @@ router.put('/update/:username', authenticate, async (req, res) => {
           return res.status(400).json({ error: 'Invalid avatar data' });
         }
       }
-      // Provision SIP connection if user has API key but no connection yet
-      const userApiKey = user.telnyxApiKey;
-      const needsProvisioning = userApiKey && !user.webrtcConnectionId && user.sipUsername;
+      // Provision connections if not yet created
+      const needsProvisioning = (!user.webrtcConnectionId || !user.appConnectionId || !user.messagingProfileId) && user.sipUsername;
 
       await user.save();
 
       if (needsProvisioning) {
         try {
           const plainSipPassword = decrypt(user.sipPassword);
-          const { connectionId } = await provisionSipCredentials(user.sipUsername, plainSipPassword, userApiKey);
-          if (connectionId) {
-            user.webrtcConnectionId = connectionId;
-            await user.save();
-            console.log(`[Profile] Auto-provisioned SIP connection ${connectionId} for ${username} using their API key`);
-          }
+          const prefix = user.role === 'admin' ? 'admin' : 'agent';
+          const provisioned = await provisionAgentConnections(user.sipUsername, plainSipPassword, prefix);
+          if (provisioned.appConnectionId && !user.appConnectionId) user.appConnectionId = provisioned.appConnectionId;
+          if (provisioned.webrtcConnectionId && !user.webrtcConnectionId) user.webrtcConnectionId = provisioned.webrtcConnectionId;
+          if (provisioned.messagingProfileId && !user.messagingProfileId) user.messagingProfileId = provisioned.messagingProfileId;
+          if (provisioned.outboundVoiceProfileId && !user.outboundVoiceProfileId) user.outboundVoiceProfileId = provisioned.outboundVoiceProfileId;
+          await user.save();
+          console.log(`[Profile] Auto-provisioned for ${username}`);
         } catch (provisionErr) {
-          console.error('[Profile] SIP provisioning failed:', provisionErr.message);
+          console.error('[Profile] Provisioning failed:', provisionErr.message);
           return res.status(200).json({
-            message: 'Profile updated but SIP provisioning failed: ' + provisionErr.message,
+            message: 'Profile updated but connection provisioning failed: ' + provisionErr.message,
             webrtcConnectionId: null,
           });
         }
@@ -399,6 +490,15 @@ router.patch('/update-status/:username', authenticate, async (req, res) => {
       user.status = status;
       await user.save();
       res.status(200).json({ status: user.status, message: "User status updated" });
+
+      // Broadcast status change for real-time admin dashboards
+      broadcast('AGENT_STATUS_CHANGED', {
+        username: user.username,
+        status: user.status,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        assignedQueue: user.assignedQueue,
+      });
 
       // When agent comes online, check for queued calls
       if (status === 'online') {
@@ -453,7 +553,9 @@ router.get('/phone-numbers', authenticate, async (req, res) => {
   }
 
   try {
-    const response = await telnyx.phoneNumbers.list({
+    const { getOrgTelnyxClient } = await import('../src/services/org-telnyx.js');
+    const orgTelnyx = await getOrgTelnyxClient();
+    const response = await orgTelnyx.phoneNumbers.list({
       'filter[tag]': tag,
       'page[number]': 1,
       'page[size]': 20,
@@ -465,15 +567,12 @@ router.get('/phone-numbers', authenticate, async (req, res) => {
   }
 });
 
-//===================== MESSAGING NUMBERS (SMS-capable numbers on user's account) =====================
+//===================== MESSAGING NUMBERS (SMS-capable numbers on org account) =====================
 router.get('/messaging-numbers', authenticate, async (req, res) => {
   try {
-    const user = await User.findOne({ where: { username: req.user.username } });
-    const apiKey = user?.telnyxApiKey;
-    if (!apiKey) return res.json({ data: [] });
-
-    const userTelnyx = new Telnyx({ apiKey });
-    const response = await userTelnyx.phoneNumbers.list({
+    const { getOrgTelnyxClient } = await import('../src/services/org-telnyx.js');
+    const orgTelnyx = await getOrgTelnyxClient();
+    const response = await orgTelnyx.phoneNumbers.list({
       'page[size]': 250,
     });
     // Filter to numbers that have a messaging profile
@@ -494,11 +593,16 @@ router.get('/messaging-numbers', authenticate, async (req, res) => {
 
 //===================== PHONE NUMBER MANAGEMENT (User's own API key) =====================
 
+async function getOrgApiKey() {
+  const Settings = (await import('../models/Settings.js')).default;
+  const row = await Settings.findByPk('orgTelnyxApiKey');
+  return row?.value || process.env.TELNYX_API;
+}
+
 router.get('/my-numbers', authenticate, async (req, res) => {
   try {
-    const user = await User.findOne({ where: { username: req.user.username } });
-    const apiKey = user?.telnyxApiKey;
-    if (!apiKey) return res.status(400).json({ message: 'No Telnyx API key configured. Add one in your profile.' });
+    const apiKey = await getOrgApiKey();
+    if (!apiKey) return res.status(400).json({ message: 'No Telnyx API key configured. Ask an admin to set it in Organization Settings.' });
 
     const { page = 1, size = 20 } = req.query;
     const response = await axios.get('https://api.telnyx.com/v2/phone_numbers', {
@@ -514,8 +618,7 @@ router.get('/my-numbers', authenticate, async (req, res) => {
 
 router.get('/available-numbers', authenticate, async (req, res) => {
   try {
-    const user = await User.findOne({ where: { username: req.user.username } });
-    const apiKey = user?.telnyxApiKey;
+    const apiKey = await getOrgApiKey();
     if (!apiKey) return res.status(400).json({ message: 'No Telnyx API key configured.' });
 
     const { country_code = 'US', state, city, limit = 20 } = req.query;
@@ -540,8 +643,7 @@ router.get('/available-numbers', authenticate, async (req, res) => {
 
 router.post('/purchase-number', authenticate, async (req, res) => {
   try {
-    const user = await User.findOne({ where: { username: req.user.username } });
-    const apiKey = user?.telnyxApiKey;
+    const apiKey = await getOrgApiKey();
     if (!apiKey) return res.status(400).json({ message: 'No Telnyx API key configured.' });
 
     const { phone_number, connection_id, messaging_profile_id } = req.body;
@@ -563,8 +665,7 @@ router.post('/purchase-number', authenticate, async (req, res) => {
 
 router.delete('/release-number/:numberId', authenticate, async (req, res) => {
   try {
-    const user = await User.findOne({ where: { username: req.user.username } });
-    const apiKey = user?.telnyxApiKey;
+    const apiKey = await getOrgApiKey();
     if (!apiKey) return res.status(400).json({ message: 'No Telnyx API key configured.' });
 
     await axios.delete(`https://api.telnyx.com/v2/phone_numbers/${req.params.numberId}`, {
@@ -574,6 +675,46 @@ router.delete('/release-number/:numberId', authenticate, async (req, res) => {
   } catch (err) {
     console.error('Error releasing number:', err.response?.data || err.message);
     res.status(err.response?.status || 500).json({ message: err.response?.data?.errors?.[0]?.detail || 'Error releasing number' });
+  }
+});
+
+//===================== ASSIGN/UNASSIGN NUMBER TO VOICE APP =====================
+router.post('/assign-number', authenticate, async (req, res) => {
+  const { numberId } = req.body;
+  if (!numberId) return res.status(400).json({ message: 'numberId is required' });
+
+  try {
+    const user = await User.findOne({ where: { username: req.user.username } });
+    if (!user?.appConnectionId) {
+      return res.status(400).json({ message: 'Your Voice App is not provisioned. Ask an admin to configure the org API key.' });
+    }
+
+    const { getOrgTelnyxClient } = await import('../src/services/org-telnyx.js');
+    const telnyx = await getOrgTelnyxClient();
+    await telnyx.phoneNumbers.update(numberId, {
+      connection_id: user.appConnectionId,
+    });
+    res.json({ message: 'Number assigned to your Voice App' });
+  } catch (err) {
+    console.error('Error assigning number:', err.raw?.errors?.[0]?.detail || err.message);
+    res.status(err.status || 500).json({ message: err.raw?.errors?.[0]?.detail || 'Failed to assign number' });
+  }
+});
+
+router.post('/unassign-number', authenticate, async (req, res) => {
+  const { numberId } = req.body;
+  if (!numberId) return res.status(400).json({ message: 'numberId is required' });
+
+  try {
+    const { getOrgTelnyxClient } = await import('../src/services/org-telnyx.js');
+    const telnyx = await getOrgTelnyxClient();
+    await telnyx.phoneNumbers.update(numberId, {
+      connection_id: '',
+    });
+    res.json({ message: 'Number unassigned from Voice App' });
+  } catch (err) {
+    console.error('Error unassigning number:', err.raw?.errors?.[0]?.detail || err.message);
+    res.status(err.status || 500).json({ message: err.raw?.errors?.[0]?.detail || 'Failed to unassign number' });
   }
 });
 
