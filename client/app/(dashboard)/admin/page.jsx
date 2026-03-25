@@ -42,6 +42,7 @@ function OrgSettingsPanel() {
   const currentForm = form || {
     orgTelnyxApiKey: '',
     orgTelnyxPublicKey: settings?.orgTelnyxPublicKey || '',
+    storageBucketName: settings?.storageBucketName || '',
   };
 
   const handleSave = async () => {
@@ -49,7 +50,8 @@ function OrgSettingsPanel() {
     try {
       const payload = { ...currentForm };
       if (!payload.orgTelnyxApiKey) delete payload.orgTelnyxApiKey;
-      const result = await updateSettings(payload).unwrap();
+      if (!payload.storageBucketName) delete payload.storageBucketName;
+      await updateSettings(payload).unwrap();
       setSaved(true);
       setForm(null);
       setTimeout(() => setSaved(false), 5000);
@@ -88,6 +90,20 @@ function OrgSettingsPanel() {
             className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono dark:border-gray-600 dark:bg-gray-700 dark:text-white"
           />
         </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Storage Bucket Name {settings?.storageBucketName && <span className="text-xs text-gray-400">(current: {settings.storageBucketName})</span>}
+          </label>
+          <input
+            placeholder="e.g. my-contact-center-audio"
+            value={currentForm.storageBucketName}
+            onChange={(e) => setForm({ ...currentForm, storageBucketName: e.target.value })}
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+          />
+          <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+            Telnyx Storage bucket for audio files. Will be created automatically if it does not exist.
+          </p>
+        </div>
 
         {/* Status info */}
         <div className="rounded-md bg-gray-50 dark:bg-gray-700/50 p-3 space-y-1">
@@ -101,6 +117,12 @@ function OrgSettingsPanel() {
             <span className="text-gray-500 dark:text-gray-400">Public Key</span>
             <span className={`font-medium ${settings?.orgTelnyxPublicKey ? 'text-green-600 dark:text-green-400' : 'text-yellow-500'}`}>
               {settings?.orgTelnyxPublicKey ? 'Configured' : 'Not set'}
+            </span>
+          </div>
+          <div className="flex justify-between text-xs">
+            <span className="text-gray-500 dark:text-gray-400">Storage Bucket</span>
+            <span className={`font-medium ${settings?.storageBucketName ? 'text-green-600 dark:text-green-400' : 'text-yellow-500'}`}>
+              {settings?.storageBucketName || 'Not set'}
             </span>
           </div>
           <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">

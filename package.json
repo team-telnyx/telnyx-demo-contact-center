@@ -1,23 +1,23 @@
 {
-    "name": "contact-center-v2-demo",
-    "version": "1.0.0",
+    "name": "telnyx-demo-contact-center",
+    "version": "4.0.0",
     "private": true,
     "workspaces": [
         "client",
-        "server",
-        "shared"
+        "server"
     ],
     "scripts": {
-        "client": "cd client && npm start",
-        "server": "cd server && npm start",
-        "start": "concurrently \"npm run server\" \"npm run client\"",
-        "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
-        "dev:client": "cd client && npm run dev",
-        "dev:server": "cd server && npm run dev",
-        "build": "npm run build:shared && npm run build:client && npm run build:server",
-        "build:client": "cd client && npm run build",
-        "build:server": "cd server && npm run build",
-        "build:shared": "cd shared && npm run build"
+        "start": "concurrently \"pnpm run start:server\" \"pnpm run start:client\"",
+        "dev": "concurrently \"pnpm run dev:server\" \"pnpm run dev:client\"",
+        "start:client": "cd client && pnpm start",
+        "start:server": "cd server && pnpm start",
+        "dev:client": "cd client && pnpm run dev",
+        "dev:server": "cd server && pnpm run dev",
+        "build": "pnpm run build:client",
+        "build:client": "cd client && pnpm run build",
+        "test": "concurrently \"pnpm run test:client\" \"pnpm run test:server\"",
+        "test:client": "cd client && pnpm test",
+        "test:server": "cd server && pnpm test"
     },
     "devDependencies": {
         "concurrently": "^6.5.1"

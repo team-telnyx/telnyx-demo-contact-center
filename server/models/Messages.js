@@ -56,7 +56,9 @@ Messages.init({
   }
 }, {
   sequelize,
-  modelName: 'Messages'
+  modelName: 'Messages',
+  tableName: 'Messages',
+  underscored: true,
 });
 
 export default Messages;

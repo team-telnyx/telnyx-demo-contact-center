@@ -165,6 +165,7 @@ const EnqueueNode = memo(({ data }) => (
   <BaseNode data={data} category="routing">
     <F label="Action" value="enqueue" />
     <F label="Queue" value={data.queueName || 'General_Queue'} />
+    <F label="Hold Music" value={data.holdMusicUrl ? 'custom' : 'none'} />
   </BaseNode>
 ));
 EnqueueNode.displayName = 'EnqueueNode';
@@ -218,14 +219,6 @@ const ConferenceNode = memo(({ data }) => (
   </BaseNode>
 ));
 ConferenceNode.displayName = 'ConferenceNode';
-
-const HoldNode = memo(({ data }) => (
-  <BaseNode data={data} category="action">
-    <F label="Action" value={data.unhold ? 'unhold' : 'hold'} />
-    <F label="Audio" value={data.audioUrl || 'default'} />
-  </BaseNode>
-));
-HoldNode.displayName = 'HoldNode';
 
 const SendDTMFNode = memo(({ data }) => (
   <BaseNode data={data} category="action">
@@ -363,7 +356,6 @@ export const nodeTypes = {
   recordPause: RecordPauseNode,
   recordResume: RecordResumeNode,
   conference: ConferenceNode,
-  hold: HoldNode,
   sendDTMF: SendDTMFNode,
   refer: ReferNode,
   streamingStart: StreamingStartNode,
@@ -389,71 +381,146 @@ export const NODE_PALETTE = [
   { type: 'incomingCall', label: 'Incoming Call', category: 'trigger', defaults: { label: 'Incoming Call', direction: 'incoming' } },
 
   // Core Call Control
-  { type: 'answer', label: 'Answer', category: 'action', defaults: { label: 'Answer' } },
-  { type: 'reject', label: 'Reject', category: 'end', defaults: { label: 'Reject', cause: 'CALL_REJECTED' } },
-  { type: 'hangup', label: 'Hang Up', category: 'end', defaults: { label: 'Hang Up' } },
-  { type: 'transfer', label: 'Transfer', category: 'action', defaults: { label: 'Transfer', to: '', from: '' } },
-  { type: 'bridge', label: 'Bridge', category: 'action', defaults: { label: 'Bridge', callControlId: '', parkAfterUnbridge: 'self' } },
-  { type: 'dial', label: 'Dial', category: 'action', defaults: { label: 'Dial', to: '', from: '', connectionId: '' } },
-  { type: 'hold', label: 'Hold / Unhold', category: 'action', defaults: { label: 'Hold', unhold: false, audioUrl: '' } },
-  { type: 'sendDTMF', label: 'Send DTMF', category: 'action', defaults: { label: 'Send DTMF', digits: '', durationMs: 250 } },
-  { type: 'refer', label: 'SIP Refer', category: 'action', defaults: { label: 'SIP Refer', sipAddress: '' } },
+  { type: 'answer', label: 'Answer', category: 'action', defaults: {
+    label: 'Answer', clientState: '', preferredCodecs: '', record: '', recordFormat: 'mp3', recordChannels: 'dual',
+    recordMaxLength: 0, recordTimeoutSecs: 0, recordTrack: 'both', recordTrim: '', recordCustomFileName: '',
+    sendSilenceWhenIdle: false, streamUrl: '', streamTrack: '', webhookUrl: '',
+  }},
+  { type: 'transfer', label: 'Transfer', category: 'action', defaults: {
+    label: 'Transfer', to: '', from: '', fromDisplayName: '', clientState: '', webhookUrl: '',
+    timeoutSecs: 30, timeLimitSecs: 0, parkAfterUnbridge: '', sipAuthUsername: '', sipAuthPassword: '',
+    record: '', recordFormat: 'mp3', recordChannels: 'dual', recordTrack: 'both', recordMaxLength: 0,
+    answeringMachineDetection: '', audioUrl: '',
+  }},
+  { type: 'bridge', label: 'Bridge', category: 'action', defaults: {
+    label: 'Bridge', callControlId: '', parkAfterUnbridge: 'self', clientState: '',
+    playRingtone: false, ringtone: '', holdAfterUnbridge: false, muteDtmf: 'none', preventDoubleBridge: false,
+    queue: '', record: '', recordFormat: 'mp3', recordChannels: 'dual', recordTrack: 'both', recordMaxLength: 0,
+  }},
+  { type: 'dial', label: 'Dial', category: 'action', defaults: {
+    label: 'Dial', to: '', from: '', fromDisplayName: '', connectionId: '', clientState: '',
+    timeoutSecs: 30, timeLimitSecs: 0, webhookUrl: '', record: '', recordFormat: 'mp3',
+    sipAuthUsername: '', sipAuthPassword: '', answeringMachineDetection: '',
+  }},
+  { type: 'sendDTMF', label: 'Send DTMF', category: 'action', defaults: { label: 'Send DTMF', digits: '', durationMs: 250, clientState: '' } },
+  { type: 'refer', label: 'SIP Refer', category: 'action', defaults: { label: 'SIP Refer', sipAddress: '', sipAuthUsername: '', sipAuthPassword: '', clientState: '' } },
   { type: 'clientStateUpdate', label: 'Client State', category: 'action', defaults: { label: 'Client State', clientState: '' } },
-  { type: 'sendSipInfo', label: 'Send SIP Info', category: 'action', defaults: { label: 'Send SIP Info', sipInfoType: '', sipInfoBody: '' } },
+  { type: 'sendSipInfo', label: 'Send SIP Info', category: 'action', defaults: { label: 'Send SIP Info', sipInfoType: '', sipInfoBody: '', clientState: '' } },
 
   // Media
-  { type: 'speak', label: 'Speak (TTS)', category: 'media', defaults: { label: 'Speak', payload: 'Hello, welcome.', voice: 'female', language: 'en-US' } },
-  { type: 'playAudio', label: 'Play Audio', category: 'media', defaults: { label: 'Play Audio', audioUrl: '', loop: 'single', overlay: false } },
-  { type: 'playbackStop', label: 'Stop Playback', category: 'media', defaults: { label: 'Stop Playback' } },
+  { type: 'speak', label: 'Speak (TTS)', category: 'media', defaults: {
+    label: 'Speak', payload: 'Hello, welcome.', voice: 'female', language: 'en-US',
+    payloadType: 'text', serviceLevel: 'premium', loop: 1, targetLegs: 'self', clientState: '',
+  }},
+  { type: 'playAudio', label: 'Play Audio', category: 'media', defaults: {
+    label: 'Play Audio', audioUrl: '', mediaName: '', audioType: '', loop: 1, overlay: false,
+    targetLegs: 'self', cacheAudio: true, clientState: '',
+  }},
+  { type: 'playbackStop', label: 'Stop Playback', category: 'media', defaults: { label: 'Stop Playback', clientState: '' } },
 
   // Gather / DTMF Routing
-  { type: 'gather', label: 'Gather (Speak)', category: 'routing', defaults: { label: 'Gather DTMF', method: 'speak', payload: 'Press 1 for sales, 2 for support.', maxDigits: '1', timeout: 10, digits: '1,2', voice: 'female', language: 'en-US' } },
-  { type: 'gatherAudio', label: 'Gather (Audio)', category: 'routing', defaults: { label: 'Gather Audio', audioUrl: '', maxDigits: '1', timeout: 10 } },
-  { type: 'gatherAI', label: 'Gather (AI)', category: 'ai', defaults: { label: 'Gather AI', model: '', prompt: '' } },
-  { type: 'gatherStop', label: 'Gather Stop', category: 'routing', defaults: { label: 'Gather Stop' } },
+  { type: 'gather', label: 'Gather (Speak)', category: 'routing', defaults: {
+    label: 'Gather DTMF', payload: 'Press 1 for sales, 2 for support.', voice: 'female', language: 'en-US',
+    payloadType: 'text', serviceLevel: 'premium', maxDigits: '1', minDigits: '1', timeout: 10,
+    interDigitTimeout: 5, digits: '1,2', invalidPayload: '', maxTries: 3, terminatingDigit: '', clientState: '',
+  }},
+  { type: 'gatherAudio', label: 'Gather (Audio)', category: 'routing', defaults: {
+    label: 'Gather Audio', audioUrl: '', mediaName: '', invalidAudioUrl: '', invalidMediaName: '',
+    maxDigits: '1', minDigits: '1', timeout: 10, interDigitTimeout: 5, maxTries: 3,
+    validDigits: '', terminatingDigit: '', clientState: '',
+  }},
+  { type: 'gatherAI', label: 'Gather (AI)', category: 'ai', defaults: {
+    label: 'Gather AI', greeting: '', gatherEndedSpeech: '', voice: 'female', language: 'en-US',
+    userResponseTimeoutMs: 10000, sendPartialResults: false, sendMessageHistoryUpdates: false, clientState: '',
+  }},
+  { type: 'gatherStop', label: 'Gather Stop', category: 'routing', defaults: { label: 'Gather Stop', clientState: '' } },
 
   // Queue
-  { type: 'enqueue', label: 'Enqueue', category: 'routing', defaults: { label: 'Enqueue', queueName: 'General_Queue' } },
-  { type: 'leaveQueue', label: 'Leave Queue', category: 'routing', defaults: { label: 'Leave Queue' } },
+  { type: 'enqueue', label: 'Enqueue', category: 'routing', defaults: {
+    label: 'Enqueue', queueName: 'General_Queue', holdMusicUrl: '', maxSize: 0, maxWaitTimeSecs: 0, keepAfterHangup: false, clientState: '',
+  }},
+  { type: 'leaveQueue', label: 'Leave Queue', category: 'routing', defaults: { label: 'Leave Queue', clientState: '' } },
 
   // Recording
-  { type: 'recordStart', label: 'Record Start', category: 'recording', defaults: { label: 'Record Start', format: 'mp3', channels: 'dual', maxLength: 0, trimSilence: 'false' } },
-  { type: 'recordStop', label: 'Record Stop', category: 'recording', defaults: { label: 'Record Stop' } },
-  { type: 'recordPause', label: 'Record Pause', category: 'recording', defaults: { label: 'Record Pause' } },
-  { type: 'recordResume', label: 'Record Resume', category: 'recording', defaults: { label: 'Record Resume' } },
-  { type: 'siprecStart', label: 'SIPREC Start', category: 'recording', defaults: { label: 'SIPREC Start' } },
-  { type: 'siprecStop', label: 'SIPREC Stop', category: 'recording', defaults: { label: 'SIPREC Stop' } },
+  { type: 'recordStart', label: 'Record Start', category: 'recording', defaults: {
+    label: 'Record Start', format: 'mp3', channels: 'dual', maxLength: 0, playBeep: false,
+    recordingTrack: 'both', timeoutSecs: 0, customFileName: '', clientState: '',
+  }},
+  { type: 'recordStop', label: 'Record Stop', category: 'recording', defaults: { label: 'Record Stop', clientState: '' } },
+  { type: 'recordPause', label: 'Record Pause', category: 'recording', defaults: { label: 'Record Pause', clientState: '' } },
+  { type: 'recordResume', label: 'Record Resume', category: 'recording', defaults: { label: 'Record Resume', clientState: '' } },
+  { type: 'siprecStart', label: 'SIPREC Start', category: 'recording', defaults: {
+    label: 'SIPREC Start', connectorName: '', siprecTrack: '', sessionTimeoutSecs: 0, secure: false, clientState: '',
+  }},
+  { type: 'siprecStop', label: 'SIPREC Stop', category: 'recording', defaults: { label: 'SIPREC Stop', clientState: '' } },
 
   // Streaming / Transcription / Fork
-  { type: 'streamingStart', label: 'Stream Start', category: 'streaming', defaults: { label: 'Stream Start', streamUrl: '', streamTrack: 'both_tracks' } },
-  { type: 'streamingStop', label: 'Stream Stop', category: 'streaming', defaults: { label: 'Stream Stop' } },
-  { type: 'transcriptionStart', label: 'Transcribe Start', category: 'streaming', defaults: { label: 'Transcribe Start', language: 'en' } },
-  { type: 'transcriptionStop', label: 'Transcribe Stop', category: 'streaming', defaults: { label: 'Transcribe Stop' } },
-  { type: 'forkStart', label: 'Fork Start', category: 'streaming', defaults: { label: 'Fork Start', target: '', streamType: 'raw' } },
-  { type: 'forkStop', label: 'Fork Stop', category: 'streaming', defaults: { label: 'Fork Stop' } },
+  { type: 'streamingStart', label: 'Stream Start', category: 'streaming', defaults: {
+    label: 'Stream Start', streamUrl: '', streamTrack: 'both_tracks', streamCodec: '', streamAuthToken: '',
+    enableDialogflow: false, clientState: '',
+  }},
+  { type: 'streamingStop', label: 'Stream Stop', category: 'streaming', defaults: { label: 'Stream Stop', clientState: '' } },
+  { type: 'transcriptionStart', label: 'Transcribe Start', category: 'streaming', defaults: {
+    label: 'Transcribe Start', transcriptionEngine: 'Telnyx', language: 'en', transcriptionTracks: 'inbound', clientState: '',
+  }},
+  { type: 'transcriptionStop', label: 'Transcribe Stop', category: 'streaming', defaults: { label: 'Transcribe Stop', clientState: '' } },
+  { type: 'forkStart', label: 'Fork Start', category: 'streaming', defaults: {
+    label: 'Fork Start', target: '', rx: '', tx: '', streamType: 'decrypted', clientState: '',
+  }},
+  { type: 'forkStop', label: 'Fork Stop', category: 'streaming', defaults: { label: 'Fork Stop', clientState: '' } },
 
   // AI
-  { type: 'noiseSuppressionStart', label: 'Noise Suppression', category: 'ai', defaults: { label: 'Noise Suppression', direction: 'both' } },
-  { type: 'noiseSuppressionStop', label: 'Noise Supp. Stop', category: 'ai', defaults: { label: 'Noise Supp. Stop' } },
-  { type: 'aiAssistantStart', label: 'AI Assistant Start', category: 'ai', defaults: { label: 'AI Assistant', model: '', systemPrompt: '' } },
-  { type: 'aiAssistantStop', label: 'AI Assistant Stop', category: 'ai', defaults: { label: 'AI Assistant Stop' } },
+  { type: 'noiseSuppressionStart', label: 'Noise Suppression', category: 'ai', defaults: {
+    label: 'Noise Suppression', direction: 'both', engine: 'Krisp', clientState: '',
+  }},
+  { type: 'noiseSuppressionStop', label: 'Noise Supp. Stop', category: 'ai', defaults: { label: 'Noise Supp. Stop', clientState: '' } },
+  { type: 'aiAssistantStart', label: 'AI Assistant Start', category: 'ai', defaults: {
+    label: 'AI Assistant', voice: 'female', greeting: '', systemPrompt: '',
+    sendMessageHistoryUpdates: false, clientState: '',
+  }},
+  { type: 'aiAssistantStop', label: 'AI Assistant Stop', category: 'ai', defaults: { label: 'AI Assistant Stop', clientState: '' } },
 
   // Conference
-  { type: 'conference', label: 'Conference', category: 'conference', defaults: { label: 'Conference', conferenceName: '', beepEnabled: 'always' } },
+  { type: 'conference', label: 'Conference', category: 'conference', defaults: {
+    label: 'Conference', conferenceName: '', beepEnabled: 'always', startOnCreate: true, maxParticipants: 0,
+  }},
+
+  // End Call
+  { type: 'reject', label: 'Reject', category: 'end', defaults: { label: 'Reject', cause: 'CALL_REJECTED', clientState: '' } },
+  { type: 'hangup', label: 'Hang Up', category: 'end', defaults: { label: 'Hang Up', clientState: '' } },
 ];
 
 // ========================= DEFAULT FLOW (matching original contact center behavior) =========================
 
-export const DEFAULT_FLOW = {
-  nodes: [
-    { id: '1', type: 'incomingCall', position: { x: 350, y: 0 }, data: { label: 'Incoming Call', direction: 'incoming' } },
-    { id: '2', type: 'answer', position: { x: 350, y: 100 }, data: { label: 'Answer' } },
-    { id: '3', type: 'speak', position: { x: 350, y: 200 }, data: { label: 'Welcome', payload: 'Thank you for calling. Please hold while we connect you with an agent.', voice: 'female', language: 'en-US' } },
-    { id: '4', type: 'enqueue', position: { x: 350, y: 330 }, data: { label: 'Agent Queue', queueName: 'General_Queue' } },
-  ],
-  edges: [
-    { id: 'e1-2', source: '1', target: '2', animated: true, style: { stroke: '#00a37a' } },
-    { id: 'e2-3', source: '2', target: '3', animated: true, style: { stroke: '#2563eb' } },
-    { id: 'e3-4', source: '3', target: '4', animated: true, style: { stroke: '#9333ea' } },
-  ],
-};
+/**
+ * Create a node using the palette definition for the given type.
+ * Overrides let you customize label, payload, etc.
+ */
+export function createNode(id, type, position, overrides = {}) {
+  const paletteDef = NODE_PALETTE.find((n) => n.type === type);
+  const defaults = paletteDef ? { ...paletteDef.defaults } : { label: type };
+  return { id, type, position, data: { ...defaults, ...overrides } };
+}
+
+/**
+ * Generate the default flow (Incoming → Answer → Speak → Enqueue).
+ * All node data comes from the palette definitions.
+ */
+export function buildDefaultFlow() {
+  return {
+    nodes: [
+      createNode('1', 'incomingCall', { x: 350, y: 0 }),
+      createNode('2', 'answer', { x: 350, y: 120 }),
+      createNode('3', 'speak', { x: 350, y: 260 }, {
+        label: 'Welcome',
+        payload: 'Thank you for calling. Please hold while we connect you with an agent.',
+      }),
+      createNode('4', 'enqueue', { x: 350, y: 420 }, { label: 'Agent Queue' }),
+    ],
+    edges: [
+      { id: 'e1-2', source: '1', target: '2', animated: true, style: { stroke: '#00a37a' } },
+      { id: 'e2-3', source: '2', target: '3', animated: true, style: { stroke: '#2563eb' } },
+      { id: 'e3-4', source: '3', target: '4', animated: true, style: { stroke: '#9333ea' } },
+    ],
+  };
+}

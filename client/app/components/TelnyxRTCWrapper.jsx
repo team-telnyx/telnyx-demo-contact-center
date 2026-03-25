@@ -105,7 +105,7 @@ export default function TelnyxRTCWrapper({ children }) {
 
       try {
         const response = await fetch(
-          `https://${process.env.NEXT_PUBLIC_API_HOST}:${process.env.NEXT_PUBLIC_API_PORT}/api/users/sip-credentials`,
+          `/api/users/sip-credentials`,
           { headers: { Authorization: `Bearer ${token}` } }
         );
 

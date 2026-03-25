@@ -17,6 +17,7 @@ IvrFlow.init({
     type: DataTypes.STRING,
     allowNull: true,
   },
+  // Draft version — what the editor works with
   flowData: {
     type: DataTypes.TEXT,
     allowNull: false,
@@ -28,6 +29,18 @@ IvrFlow.init({
       this.setDataValue('flowData', typeof val === 'string' ? val : JSON.stringify(val));
     },
   },
+  // Published version — what the IVR engine executes
+  publishedFlowData: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+    get() {
+      const raw = this.getDataValue('publishedFlowData');
+      return raw ? JSON.parse(raw) : null;
+    },
+    set(val) {
+      this.setDataValue('publishedFlowData', val ? (typeof val === 'string' ? val : JSON.stringify(val)) : null);
+    },
+  },
   phoneNumber: {
     type: DataTypes.STRING(20),
     allowNull: true,
@@ -35,6 +48,15 @@ IvrFlow.init({
   active: {
     type: DataTypes.BOOLEAN,
     defaultValue: false,
+  },
+  // Whether draft differs from published
+  hasDraft: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false,
+  },
+  publishedAt: {
+    type: DataTypes.DATE,
+    allowNull: true,
   },
   createdBy: {
     type: DataTypes.STRING,

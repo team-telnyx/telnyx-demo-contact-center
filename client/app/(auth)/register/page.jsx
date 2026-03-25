@@ -26,7 +26,7 @@ export default function RegisterPage() {
 
     try {
       const response = await fetch(
-        `https://${process.env.NEXT_PUBLIC_API_HOST}:${process.env.NEXT_PUBLIC_API_PORT}/api/users/register`,
+        `/api/users/register`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

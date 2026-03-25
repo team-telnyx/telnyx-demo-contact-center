@@ -4,6 +4,11 @@ import Providers from './providers';
 export const metadata = {
   title: 'Contact Center',
   description: 'Telnyx-powered Contact Center Platform',
+  icons: {
+    icon: '/favicon-32.png',
+    apple: '/apple-touch-icon.png',
+  },
+  manifest: '/manifest.json',
 };
 
 export default function RootLayout({ children }) {

@@ -9,6 +9,7 @@ import Settings from '../models/Settings.js';
 import Telnyx from 'telnyx';
 import crypto from 'crypto';
 import { encrypt } from '../src/utils/encryption.js';
+import { S3Client, CreateBucketCommand } from '@aws-sdk/client-s3';
 import { invalidateOrgCache } from '../src/services/org-telnyx.js';
 import { broadcast } from './websocket.js';
 
@@ -267,7 +268,7 @@ router.get('/settings', async (req, res) => {
 
 router.put('/settings', async (req, res) => {
   try {
-    const { orgTelnyxApiKey, orgTelnyxPublicKey } = req.body;
+    const { orgTelnyxApiKey, orgTelnyxPublicKey, storageBucketName } = req.body;
 
     if (orgTelnyxPublicKey !== undefined) {
       await Settings.upsert({ key: 'orgTelnyxPublicKey', value: orgTelnyxPublicKey || null });
@@ -277,6 +278,32 @@ router.put('/settings', async (req, res) => {
     if (orgTelnyxApiKey) {
       await Settings.upsert({ key: 'orgTelnyxApiKey', value: orgTelnyxApiKey });
       invalidateOrgCache();
+    }
+
+    // Save storage bucket name and ensure bucket exists
+    if (storageBucketName) {
+      const currentApiKey = orgTelnyxApiKey || (await Settings.findByPk('orgTelnyxApiKey'))?.value;
+      if (currentApiKey) {
+        try {
+          const s3 = new S3Client({
+            endpoint: 'https://us-central-1.telnyxcloudstorage.com',
+            region: 'us-central-1',
+            credentials: { accessKeyId: currentApiKey, secretAccessKey: currentApiKey },
+            forcePathStyle: true,
+            requestChecksumCalculation: 'WHEN_REQUIRED',
+            responseChecksumValidation: 'WHEN_REQUIRED',
+          });
+          await s3.send(new CreateBucketCommand({ Bucket: storageBucketName }));
+          console.log(`[Settings] Storage bucket "${storageBucketName}" created`);
+        } catch (bucketErr) {
+          if (bucketErr.name === 'BucketAlreadyOwnedByYou' || bucketErr.name === 'BucketAlreadyExists') {
+            console.log(`[Settings] Storage bucket "${storageBucketName}" already exists`);
+          } else {
+            console.error('[Settings] Storage bucket setup error:', bucketErr.message);
+          }
+        }
+      }
+      await Settings.upsert({ key: 'storageBucketName', value: storageBucketName });
     }
 
     invalidateOrgCache();
@@ -371,22 +398,51 @@ router.put('/settings', async (req, res) => {
           }
         }
 
-        // Create Messaging Profile (all destinations)
+        // Create Messaging Profile (all destinations, with webhook)
         if (!user.messagingProfileId) {
           try {
             const mp = await telnyx.messagingProfiles.create({
               name: `${prefix}_MsgProfile_${ts}_${user.sipUsername}`,
               enabled: true,
               whitelisted_destinations: ['*'],
+              webhook_url: `${webhookBase}/api/conversations/webhook`,
             });
             user.messagingProfileId = mp.data?.id;
             console.log(`[Settings] Created Messaging Profile for ${user.username}: ${user.messagingProfileId}`);
           } catch (err) {
             console.error(`[Settings] Messaging Profile failed for ${user.username}:`, err.raw?.errors?.[0]?.detail || err.message);
           }
+        } else {
+          // Ensure existing messaging profile has the webhook URL set
+          try {
+            await telnyx.messagingProfiles.update(user.messagingProfileId, {
+              webhook_url: `${webhookBase}/api/conversations/webhook`,
+              whitelisted_destinations: ['*'],
+            });
+            console.log(`[Settings] Updated webhook on Messaging Profile for ${user.username}`);
+          } catch (err) {
+            console.error(`[Settings] Messaging Profile webhook update failed for ${user.username}:`, err.raw?.errors?.[0]?.detail || err.message);
+          }
         }
 
         await user.save();
+      }
+
+      // Also update webhook URL on all existing messaging profiles
+      const allUsersWithMsgProfile = await User.findAll({
+        where: { messagingProfileId: { [Op.ne]: null } },
+      });
+      for (const u of allUsersWithMsgProfile) {
+        // Skip users we just provisioned (already updated above)
+        if (unprovisionedUsers.some((up) => up.id === u.id)) continue;
+        try {
+          await telnyx.messagingProfiles.update(u.messagingProfileId, {
+            webhook_url: `${webhookBase}/api/conversations/webhook`,
+            whitelisted_destinations: ['*'],
+          });
+        } catch (err) {
+          // Ignore errors for profiles that may no longer exist
+        }
       }
 
       const provisionedCount = unprovisionedUsers.length;

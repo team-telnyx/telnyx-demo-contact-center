@@ -41,16 +41,20 @@ Conversations.init({
   }
 }, {
   sequelize,
-  modelName: 'Conversations'
+  modelName: 'Conversations',
+  tableName: 'Conversations',
+  underscored: true,
 });
 
 Conversations.hasMany(Messages, {
   foreignKey: 'conversation_id',
+  sourceKey: 'conversation_id',
   as: 'messages'
 });
 
 Messages.belongsTo(Conversations, {
   foreignKey: 'conversation_id',
+  targetKey: 'conversation_id',
   as: 'conversation'
 });
 

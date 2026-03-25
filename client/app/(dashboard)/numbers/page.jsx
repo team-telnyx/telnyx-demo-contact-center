@@ -9,7 +9,10 @@ import {
   useReleaseNumberMutation,
   useAssignNumberMutation,
   useUnassignNumberMutation,
+  useAssignMessagingProfileMutation,
+  useUnassignMessagingProfileMutation,
   useGetUserDataQuery,
+  useGetAgentsQuery,
 } from '../../../src/store/api';
 import { formatPhoneDisplay } from '../../../src/lib/phone-utils';
 
@@ -17,8 +20,16 @@ export default function NumbersPage() {
   const { username } = useAppSelector((s) => s.auth);
   const { data: userData } = useGetUserDataQuery(username, { skip: !username });
   const appConnectionId = userData?.appConnectionId;
+  const messagingProfileId = userData?.messagingProfileId;
+  const isAdmin = userData?.role === 'admin';
+
+  // Fetch agents list for admin agent picker
+  const { data: agentsData } = useGetAgentsQuery(undefined, { skip: !isAdmin });
+  const agents = agentsData || [];
 
   const [activeTab, setActiveTab] = useState('my-numbers');
+  // Admin: selected agent for reassignment (per-number)
+  const [reassignAgent, setReassignAgent] = useState({});
 
   // Search state
   const [searchCountry, setSearchCountry] = useState('US');
@@ -36,6 +47,8 @@ export default function NumbersPage() {
   const [releaseNumber, { isLoading: releasing }] = useReleaseNumberMutation();
   const [assignNumber, { isLoading: assigning }] = useAssignNumberMutation();
   const [unassignNumber, { isLoading: unassigning }] = useUnassignNumberMutation();
+  const [assignMessagingProfile, { isLoading: assigningMsg }] = useAssignMessagingProfileMutation();
+  const [unassignMessagingProfile, { isLoading: unassigningMsg }] = useUnassignMessagingProfileMutation();
   const [actionMsg, setActionMsg] = useState({ type: '', text: '' });
 
   const handlePurchase = async (phoneNumber) => {
@@ -49,7 +62,7 @@ export default function NumbersPage() {
   };
 
   const handleRelease = async (numberId, phoneNumber) => {
-    if (!confirm(`Release ${formatPhoneDisplay(phoneNumber)}? This cannot be undone.`)) return;
+    if (!window.confirm(`Release ${formatPhoneDisplay(phoneNumber)}? This cannot be undone.`)) return;
     setActionMsg({ type: '', text: '' });
     try {
       await releaseNumber(numberId).unwrap();
@@ -81,10 +94,61 @@ export default function NumbersPage() {
     }
   };
 
+  const handleAssignMessaging = async (numberId, phoneNumber, agentUsername) => {
+    setActionMsg({ type: '', text: '' });
+    try {
+      const body = { numberId };
+      if (agentUsername) body.agentUsername = agentUsername;
+      await assignMessagingProfile(body).unwrap();
+      setActionMsg({ type: 'success', text: `Messaging profile assigned to ${formatPhoneDisplay(phoneNumber)}.` });
+      refetch();
+    } catch (err) {
+      setActionMsg({ type: 'error', text: err?.data?.message || 'Failed to assign messaging profile' });
+    }
+  };
+
+  const handleUnassignMessaging = async (numberId, phoneNumber) => {
+    setActionMsg({ type: '', text: '' });
+    try {
+      await unassignMessagingProfile({ numberId }).unwrap();
+      setActionMsg({ type: 'success', text: `Messaging profile removed from ${formatPhoneDisplay(phoneNumber)}.` });
+      refetch();
+    } catch (err) {
+      setActionMsg({ type: 'error', text: err?.data?.message || 'Failed to unassign messaging profile' });
+    }
+  };
+
+  const handleReassign = async (numberId, phoneNumber) => {
+    const agentUsername = reassignAgent[numberId];
+    if (!agentUsername) return;
+    setActionMsg({ type: '', text: '' });
+    try {
+      // Reassign both voice app and messaging profile to selected agent
+      await assignNumber({ numberId, agentUsername }).unwrap();
+      await assignMessagingProfile({ numberId, agentUsername }).unwrap();
+      setActionMsg({ type: 'success', text: `${formatPhoneDisplay(phoneNumber)} reassigned to ${agentUsername}.` });
+      setReassignAgent((prev) => ({ ...prev, [numberId]: '' }));
+      refetch();
+    } catch (err) {
+      setActionMsg({ type: 'error', text: err?.data?.message || 'Failed to reassign number' });
+    }
+  };
+
   const myNumbersList = myNumbers?.data || [];
   const availableList = availableNumbers?.data || [];
 
   const isAssignedToMe = (num) => num.connection_id === appConnectionId;
+  const isMsgAssignedToMe = (num) => messagingProfileId && num.messaging_profile_id === messagingProfileId;
+
+  // Find the agent name for a given messaging profile or connection
+  const findAgentByMsgProfile = (msgProfileId) => {
+    if (!msgProfileId || !agents.length) return null;
+    return agents.find((a) => a.messagingProfileId === msgProfileId);
+  };
+  const findAgentByConnection = (connectionId) => {
+    if (!connectionId || !agents.length) return null;
+    return agents.find((a) => a.appConnectionId === connectionId);
+  };
 
   return (
     <div>
@@ -148,13 +212,18 @@ export default function NumbersPage() {
                     <th className="px-4 py-3">Phone Number</th>
                     <th className="px-4 py-3">Status</th>
                     <th className="px-4 py-3">Type</th>
-                    <th className="px-4 py-3">Connection</th>
+                    <th className="px-4 py-3">Voice Connection</th>
+                    <th className="px-4 py-3">Messaging Profile</th>
+                    {isAdmin && <th className="px-4 py-3">Reassign</th>}
                     <th className="px-4 py-3">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                   {myNumbersList.map((num) => {
                     const assigned = isAssignedToMe(num);
+                    const msgAssigned = isMsgAssignedToMe(num);
+                    const msgAgent = findAgentByMsgProfile(num.messaging_profile_id);
+                    const voiceAgent = findAgentByConnection(num.connection_id);
                     return (
                       <tr key={num.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30">
                         <td className="px-4 py-3 font-mono text-sm font-medium text-gray-900 dark:text-white">{formatPhoneDisplay(num.phone_number)}</td>
@@ -173,6 +242,10 @@ export default function NumbersPage() {
                               <span className="h-1.5 w-1.5 rounded-full bg-telnyx-green" />
                               My Voice App
                             </span>
+                          ) : voiceAgent ? (
+                            <span className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
+                              {voiceAgent.firstName} {voiceAgent.lastName}
+                            </span>
                           ) : num.connection_name ? (
                             <span className="text-xs text-gray-500 dark:text-gray-400">{num.connection_name}</span>
                           ) : (
@@ -180,14 +253,58 @@ export default function NumbersPage() {
                           )}
                         </td>
                         <td className="px-4 py-3">
-                          <div className="flex gap-2">
+                          {msgAssigned ? (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+                              <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+                              My Profile
+                            </span>
+                          ) : msgAgent ? (
+                            <span className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
+                              {msgAgent.firstName} {msgAgent.lastName}
+                            </span>
+                          ) : num.messaging_profile_id ? (
+                            <span className="text-xs text-gray-500 dark:text-gray-400" title={num.messaging_profile_id}>
+                              {num.messaging_profile_name || 'Assigned'}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-gray-400 italic">None</span>
+                          )}
+                        </td>
+                        {isAdmin && (
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-1">
+                              <select
+                                value={reassignAgent[num.id] || ''}
+                                onChange={(e) => setReassignAgent((prev) => ({ ...prev, [num.id]: e.target.value }))}
+                                className="w-28 rounded-btn border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white px-1.5 py-1 text-xs focus:border-telnyx-green focus:outline-none"
+                              >
+                                <option value="">Select agent</option>
+                                {agents.map((a) => (
+                                  <option key={a.username} value={a.username}>
+                                    {a.firstName} {a.lastName}
+                                  </option>
+                                ))}
+                              </select>
+                              <button
+                                onClick={() => handleReassign(num.id, num.phone_number)}
+                                disabled={!reassignAgent[num.id] || assigning || assigningMsg}
+                                className="rounded-btn bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                                title="Reassign voice app and messaging profile to selected agent"
+                              >
+                                Reassign
+                              </button>
+                            </div>
+                          </td>
+                        )}
+                        <td className="px-4 py-3">
+                          <div className="flex flex-wrap gap-1.5">
                             {assigned ? (
                               <button
                                 onClick={() => handleUnassign(num.id, num.phone_number)}
                                 disabled={unassigning}
                                 className="rounded-btn border border-yellow-300 px-2.5 py-1 text-xs font-medium text-yellow-600 hover:bg-yellow-50 disabled:opacity-50 dark:border-yellow-600 dark:text-yellow-400 dark:hover:bg-yellow-900/20"
                               >
-                                Unassign
+                                Unassign Voice
                               </button>
                             ) : (
                               <button
@@ -196,7 +313,25 @@ export default function NumbersPage() {
                                 className="rounded-btn bg-telnyx-green px-2.5 py-1 text-xs font-semibold text-white hover:bg-telnyx-green/90 disabled:opacity-50"
                                 title={!appConnectionId ? 'Voice App not provisioned' : 'Assign to your Voice App'}
                               >
-                                Assign
+                                Assign Voice
+                              </button>
+                            )}
+                            {msgAssigned ? (
+                              <button
+                                onClick={() => handleUnassignMessaging(num.id, num.phone_number)}
+                                disabled={unassigningMsg}
+                                className="rounded-btn border border-blue-300 px-2.5 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50 disabled:opacity-50 dark:border-blue-600 dark:text-blue-400 dark:hover:bg-blue-900/20"
+                              >
+                                Unassign Msg
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => handleAssignMessaging(num.id, num.phone_number)}
+                                disabled={assigningMsg || !messagingProfileId}
+                                className="rounded-btn bg-blue-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                                title={!messagingProfileId ? 'Messaging profile not provisioned' : 'Assign your messaging profile'}
+                              >
+                                Assign Msg
                               </button>
                             )}
                             <button
