@@ -1,4 +1,5 @@
 import express from 'express';
+import { Op } from 'sequelize';
 import axios from 'axios';
 import { env } from '../src/config/env.js';
 import IvrFlow from '../models/IvrFlow.js';
@@ -53,9 +54,9 @@ router.get('/connection-numbers', authenticate, async (req, res) => {
 
     const apiKeySetting = await Settings.findByPk('orgTelnyxApiKey');
     const apiKey = apiKeySetting?.value || process.env.TELNYX_API;
+    // Fetch all org numbers (not just those on this voice app) — publish will reassign
     const response = await axios.get('https://api.telnyx.com/v2/phone_numbers', {
       params: {
-        'filter[connection_id]': user.appConnectionId,
         'page[size]': 250,
       },
       headers: { Authorization: `Bearer ${apiKey}` },
@@ -100,7 +101,23 @@ router.get('/:id', authenticate, async (req, res) => {
   try {
     const flow = await findOwnedFlow(req, res);
     if (!flow) return;
-    res.json(flow);
+    const response = flow.toJSON();
+    // Ensure flowData and publishedFlowData are parsed objects
+    if (typeof response.flowData === 'string') {
+      try {
+        response.flowData = JSON.parse(response.flowData);
+      } catch (parseErr) {
+        console.error('Error parsing flowData for flow', response.id, ':', parseErr.message);
+      }
+    }
+    if (typeof response.publishedFlowData === 'string') {
+      try {
+        response.publishedFlowData = JSON.parse(response.publishedFlowData);
+      } catch (parseErr) {
+        console.error('Error parsing publishedFlowData for flow', response.id, ':', parseErr.message);
+      }
+    }
+    res.json(response);
   } catch (err) {
     console.error('Error fetching IVR flow:', err.message);
     res.status(500).json({ error: 'Failed to fetch flow' });
@@ -199,19 +216,24 @@ router.post('/:id/publish', authenticate, async (req, res) => {
       return res.status(400).json({ error: `Failed to assign phone number to your Voice App: ${assignErr.raw?.errors?.[0]?.detail || assignErr.message}` });
     }
 
-    // Deactivate all other flows on this number
+    // Deactivate all OTHER flows on this number (exclude current flow)
     await IvrFlow.update(
       { active: false },
-      { where: { phoneNumber, active: true } }
+      { where: { phoneNumber, active: true, id: { [Op.ne]: flow.id } } }
     );
 
     // Activate and publish — copy draft to published
-    flow.phoneNumber = phoneNumber;
-    flow.active = true;
-    flow.publishedFlowData = flow.flowData;
-    flow.hasDraft = false;
-    flow.publishedAt = new Date();
-    await flow.save();
+    await IvrFlow.update(
+      {
+        phoneNumber,
+        active: true,
+        publishedFlowData: flow.flowData,
+        hasDraft: false,
+        publishedAt: new Date(),
+      },
+      { where: { id: flow.id } }
+    );
+    await flow.reload();
 
     res.json({ message: `Flow "${flow.name}" published to ${phoneNumber}`, flow });
   } catch (err) {

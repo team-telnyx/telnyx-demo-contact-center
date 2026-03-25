@@ -11,6 +11,7 @@ import TelnyxRTCWrapper from '../components/TelnyxRTCWrapper';
 import SoftphoneMini from '../components/SoftphoneMini';
 import Softphone from '../components/Softphone';
 import OnboardingWizard from '../components/OnboardingWizard';
+import { requestPushPermission, unsubscribeFromPush, getPushStatus } from '../../src/store/socketMiddleware';
 
 const navItems = [
   { label: 'Agent Dashboard', href: '/dashboard', badgeKey: null, roles: ['admin', 'agent'],
@@ -21,6 +22,8 @@ const navItems = [
     icon: 'M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z' },
   { label: 'IVR Builder', href: '/ivr', badgeKey: null, roles: ['admin', 'agent'],
     icon: 'M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z' },
+  { label: 'Audio Files', href: '/audio', badgeKey: null, roles: ['admin', 'agent'],
+    icon: 'M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3' },
   { label: 'Call History', href: '/history', badgeKey: null, roles: ['admin', 'agent'],
     icon: 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z' },
   { label: 'Phone Numbers', href: '/numbers', badgeKey: null, roles: ['admin', 'agent'],
@@ -50,6 +53,7 @@ export default function DashboardLayout({ children }) {
   const [darkMode, setDarkMode] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [rtcDetailOpen, setRtcDetailOpen] = useState(false);
+  const [notifStatus, setNotifStatus] = useState('loading');
 
   // Show onboarding wizard for new users (wait for profile to load first)
   useEffect(() => {
@@ -111,6 +115,23 @@ export default function DashboardLayout({ children }) {
     if (pathname === '/phone') dispatch(clearCallBadge());
     if (pathname === '/sms') dispatch(clearSmsBadge());
   }, [pathname, dispatch]);
+
+  // Check push notification status on mount
+  useEffect(() => {
+    getPushStatus().then(setNotifStatus);
+  }, []);
+
+  // Listen for notification clicks from service worker
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    const handler = (event) => {
+      if (event.data?.type === 'NOTIFICATION_CLICK' && event.data.url) {
+        router.push(event.data.url);
+      }
+    };
+    navigator.serviceWorker.addEventListener('message', handler);
+    return () => navigator.serviceWorker.removeEventListener('message', handler);
+  }, [router]);
 
   const handleLogout = () => {
     if (username) dispatch(setAgentStatus({ username, status: 'offline' }));
@@ -220,6 +241,34 @@ export default function DashboardLayout({ children }) {
             )}
 
             <div className="h-6 w-px bg-gray-700 hidden sm:block" />
+
+            {/* Push notification toggle */}
+            {notifStatus !== 'unsupported' && notifStatus !== 'loading' && (
+              <button
+                onClick={async () => {
+                  if (notifStatus === 'subscribed') {
+                    await unsubscribeFromPush();
+                    setNotifStatus('unsubscribed');
+                  } else if (notifStatus === 'denied') {
+                    alert('Notifications are blocked. Please enable them in your browser settings.');
+                  } else {
+                    const result = await requestPushPermission();
+                    if (result === 'granted') {
+                      setNotifStatus('subscribed');
+                    } else if (result === 'denied') {
+                      setNotifStatus('denied');
+                      alert('Notification permission was denied. Enable it in your browser settings.');
+                    }
+                  }
+                }}
+                className={`rounded-lg p-2 transition-colors ${notifStatus === 'subscribed' ? 'text-telnyx-green' : notifStatus === 'denied' ? 'text-red-400' : 'text-gray-300 hover:text-white'}`}
+                title={notifStatus === 'subscribed' ? 'Notifications on — click to disable' : notifStatus === 'denied' ? 'Notifications blocked in browser' : 'Enable notifications'}
+              >
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
+                </svg>
+              </button>
+            )}
 
             {/* Dark mode toggle */}
             <button

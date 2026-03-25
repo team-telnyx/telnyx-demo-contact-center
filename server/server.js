@@ -15,6 +15,8 @@ import voiceRoutes from './routes/voiceRoutes.js';
 import conversationRoutes from './routes/conversationRoutes.js';
 import ivrRoutes from './routes/ivrRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
+import audioRoutes from './routes/audioRoutes.js';
+import pushRoutes from './routes/pushRoutes.js';
 import seedDatabase from './seeds/seed.js';
 import { initWebSocket } from './routes/websocket.js';
 
@@ -107,6 +109,8 @@ app.use('/api/conversations', conversationRoutes);
 app.use('/api/voice', voiceRoutes);
 app.use('/api/ivr', ivrRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/audio', audioRoutes);
+app.use('/api/push', pushRoutes);
 
 const PORT = process.env.PORT || 3000;
 

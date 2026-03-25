@@ -1,13 +1,13 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import { jwtDecode } from 'jwt-decode';
 
-const API_BASE = `https://${process.env.NEXT_PUBLIC_API_HOST || process.env.REACT_APP_API_HOST}:${process.env.NEXT_PUBLIC_API_PORT || process.env.REACT_APP_API_PORT}`;
+// Use relative URLs so requests go through the same origin (works behind reverse proxy)
 
 export const login = createAsyncThunk(
   'auth/login',
   async ({ username, password }, { rejectWithValue }) => {
     try {
-      const response = await fetch(`${API_BASE}/api/users/login`, {
+      const response = await fetch(`/api/users/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
@@ -30,7 +30,7 @@ export const setAgentStatus = createAsyncThunk(
   async ({ username, status }, { getState, rejectWithValue }) => {
     try {
       const { auth } = getState();
-      const response = await fetch(`${API_BASE}/api/users/update-status/${username}`, {
+      const response = await fetch(`/api/users/update-status/${username}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -58,7 +58,7 @@ export const fetchProfile = createAsyncThunk(
     try {
       const { auth } = getState();
       if (!auth.username || !auth.token) return rejectWithValue('No user');
-      const response = await fetch(`${API_BASE}/api/users/user_data/${auth.username}`, {
+      const response = await fetch(`/api/users/user_data/${auth.username}`, {
         headers: { Authorization: `Bearer ${auth.token}` },
       });
       if (!response.ok) return rejectWithValue('Failed to fetch profile');
@@ -118,6 +118,10 @@ const authSlice = createSlice({
       if (p.webrtcConnectionId !== undefined) state.webrtcConnectionId = p.webrtcConnectionId;
       if (p.onboardingComplete !== undefined) state.onboardingComplete = p.onboardingComplete;
       if (p.role !== undefined) state.role = p.role;
+      if (p.agentStatus !== undefined) state.agentStatus = p.agentStatus;
+    },
+    updateAgentStatus(state, action) {
+      state.agentStatus = action.payload;
     },
   },
   extraReducers: (builder) => {
@@ -167,6 +171,6 @@ const authSlice = createSlice({
   },
 });
 
-export const { logout, hydrateFromToken, setProfile } = authSlice.actions;
+export const { logout, hydrateFromToken, setProfile, updateAgentStatus } = authSlice.actions;
 export { setAgentStatus as toggleStatus }; // backwards-compat alias
 export default authSlice.reducer;

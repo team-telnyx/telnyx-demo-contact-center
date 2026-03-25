@@ -7,6 +7,7 @@ import Conversations from '../models/Conversations.js';
 import Messages from '../models/Messages.js';
 import { broadcast, sendToUser } from './websocket.js';
 import { routeSmsToAgent } from '../src/services/auto-route.js';
+import { broadcastPush } from './pushRoutes.js';
 const router = express.Router();
 
 function hash(arr) {
@@ -197,6 +198,7 @@ router.post('/composeMessage', async (req, res) => {
 // ========================= WEBHOOK =========================
 
 router.post('/webhook', async (req, res) => {
+  try {
   const payload = req.body.data.payload;
   const event_type = req.body.data.event_type;
 
@@ -225,7 +227,7 @@ router.post('/webhook', async (req, res) => {
         assigned: false,
         tag: tags
       });
-      broadcast('NEW_CONVERSATION', conversation);
+        broadcast('NEW_CONVERSATION', conversation);
     }
 
     // Download and store MMS media locally
@@ -255,6 +257,23 @@ router.post('/webhook', async (req, res) => {
       isAssigned: conversation.assigned,
       assignedAgent: conversation.agent_assigned
     });
+    const hasMedia = rawMedia.length > 0;
+    const pushBody = hasMedia && !messageText
+      ? `${fromPhoneNumber}: [Image]`
+      : hasMedia
+        ? `${fromPhoneNumber}: ${messageText.substring(0, 80)} [Image]`
+        : `${fromPhoneNumber}: ${(messageText || '').substring(0, 100)}`;
+    const pushPayload = {
+      title: 'New Message',
+      body: pushBody,
+      tag: 'sms-' + conversation.conversation_id,
+      url: '/sms',
+    };
+    // Show image in the notification if available
+    if (hasMedia && rawMedia[0]?.url) {
+      pushPayload.image = rawMedia[0].url;
+    }
+    broadcastPush(pushPayload).catch(err => console.error('[Push] broadcastPush error:', err));
 
     await Conversations.update(
       { last_message: messageText },
@@ -356,6 +375,10 @@ router.post('/webhook', async (req, res) => {
   }
 
   res.json({ status: "ok" });
+  } catch (err) {
+    console.error('[Webhook] Error processing webhook:', err.message);
+    res.status(500).json({ status: 'error', message: err.message });
+  }
 });
 
 // ========================= CONVERSATION QUERIES =========================
@@ -406,7 +429,7 @@ router.get('/conversationMessages/:conversation_id', async (req, res) => {
       where: {
         conversation_id: req.params.conversation_id,
       },
-      order: [['createdAt', 'ASC']],
+      order: [['created_at', 'ASC']],
     });
     res.json(messages);
   } catch (err) {
@@ -421,7 +444,7 @@ router.get('/assignedTo/:agentUsername', async (req, res) => {
       where: {
         agent_assigned: req.params.agentUsername
       },
-      order: [['updatedAt', 'DESC']],
+      order: [['updated_at', 'DESC']],
     });
     res.json(assignedConversations);
   } catch (err) {

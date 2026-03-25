@@ -1,4 +1,5 @@
 import { getOrgTelnyxClient } from './org-telnyx.js';
+import { holdMusicCache } from './ivr-engine.js';
 
 const TelnyxService = {
   async dial(to, from, connectionId, webhookUrl, clientState) {
@@ -72,7 +73,10 @@ const TelnyxService = {
     const body = { call_control_id: callControlId };
     if (hold) {
       body.hold = true;
-      body.hold_audio_url = 'http://com.twilio.music.classical.s3.amazonaws.com/oldDog_-_endless_goodbye_%28instr.%29.mp3';
+      const cached = holdMusicCache.get(callControlId);
+      if (cached && cached.expires > Date.now()) {
+        body.hold_audio_url = cached.url;
+      }
     }
     return telnyx.post(`/v2/conferences/${conferenceId}/actions/join`, { body });
   },

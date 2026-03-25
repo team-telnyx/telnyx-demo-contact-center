@@ -66,6 +66,10 @@ User.init({
     allowNull: true,
     unique: true,
   },
+  googleAvatarUrl: {
+    type: DataTypes.STRING,
+    allowNull: true,
+  },
   onboardingComplete: {
     type: DataTypes.BOOLEAN,
     allowNull: false,

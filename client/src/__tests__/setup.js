@@ -1,3 +1,4 @@
+/* global vi */
 // Mock localStorage
 const localStorageMock = {
   getItem: vi.fn(),

@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useCallback, useRef, useMemo, useEffect } from 'react';
+import { useState, useCallback, useRef, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
 import ReactFlow, {
   addEdge,
   useNodesState,
@@ -11,16 +12,18 @@ import ReactFlow, {
   Panel,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { nodeTypes, NODE_PALETTE, DEFAULT_FLOW } from './nodeTypes';
+import { nodeTypes, NODE_PALETTE, createNode } from './nodeTypes';
 import {
   useGetIvrFlowsQuery,
-  useGetIvrFlowQuery,
+
   useCreateIvrFlowMutation,
   useUpdateIvrFlowMutation,
   useDeleteIvrFlowMutation,
   usePublishIvrFlowMutation,
   useUnpublishIvrFlowMutation,
   useGetConnectionNumbersQuery,
+  useGetVoicesQuery,
+  useGetAudioFilesQuery,
 } from '../../../src/store/api';
 import { formatPhoneDisplay } from '../../../src/lib/phone-utils';
 
@@ -29,6 +32,9 @@ const CATEGORY_COLORS = {
   action: '#2563eb',
   media: '#9333ea',
   routing: '#d97706',
+  recording: '#e11d48',
+  streaming: '#0891b2',
+  ai: '#6366f1',
   conference: '#db2777',
   end: '#dc2626',
 };
@@ -37,11 +43,13 @@ let idCounter = 100;
 function getId() { return `node_${idCounter++}`; }
 
 export default function IVRBuilderPage() {
+  const router = useRouter();
   const reactFlowWrapper = useRef(null);
-  const [nodes, setNodes, onNodesChange] = useNodesState(DEFAULT_FLOW.nodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(DEFAULT_FLOW.edges);
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [reactFlowInstance, setReactFlowInstance] = useState(null);
   const [selectedNode, setSelectedNode] = useState(null);
+  const [urlModeFields, setUrlModeFields] = useState({});
 
   // Flow management state
   const [currentFlowId, setCurrentFlowId] = useState(null);
@@ -49,21 +57,31 @@ export default function IVRBuilderPage() {
   const [flowDescription, setFlowDescription] = useState('');
   const [publishNumber, setPublishNumber] = useState('');
   const [showPublishModal, setShowPublishModal] = useState(false);
-  const [publishTargetId, setPublishTargetId] = useState(null); // for list quick-publish
+  const [publishTargetId, setPublishTargetId] = useState(null);
+  const [currentFlowPhone, setCurrentFlowPhone] = useState(null);
+  const [flowActive, setFlowActive] = useState(false);
+  const [flowHasDraft, setFlowHasDraft] = useState(false);
+  const [, setFlowPublishedAt] = useState(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [showFlowList, setShowFlowList] = useState(true);
   const [msg, setMsg] = useState({ type: '', text: '' });
 
   // API hooks
-  const { data: flows = [], isLoading: flowsLoading } = useGetIvrFlowsQuery();
+  const { data: flows = [], isLoading: flowsLoading, refetch: refetchFlows } = useGetIvrFlowsQuery(undefined, {
+    refetchOnMountOrArgChange: true,
+  });
   const [createFlow, { isLoading: creating }] = useCreateIvrFlowMutation();
   const [updateFlow, { isLoading: updating }] = useUpdateIvrFlowMutation();
   const [deleteFlow] = useDeleteIvrFlowMutation();
   const [publishFlow] = usePublishIvrFlowMutation();
   const [unpublishFlow] = useUnpublishIvrFlowMutation();
+  const { data: voicesData = {} } = useGetVoicesQuery();
   const { data: connectionNumbers = [], isLoading: numbersLoading } = useGetConnectionNumbersQuery();
+  const { data: audioFilesData } = useGetAudioFilesQuery();
+  const audioFiles = audioFilesData?.files || [];
 
   const onConnect = useCallback(
-    (params) => setEdges((eds) => addEdge({ ...params, animated: true, style: { stroke: '#666' } }, eds)),
+    (params) => { setEdges((eds) => addEdge({ ...params, animated: true, style: { stroke: '#666' } }, eds)); setHasUnsavedChanges(true); },
     [setEdges]
   );
 
@@ -77,12 +95,13 @@ export default function IVRBuilderPage() {
       event.preventDefault();
       const raw = event.dataTransfer.getData('application/reactflow');
       if (!raw) return;
-      const { type, defaults } = JSON.parse(raw);
+      const { type } = JSON.parse(raw);
       const position = reactFlowInstance.screenToFlowPosition({
         x: event.clientX,
         y: event.clientY,
       });
-      setNodes((nds) => nds.concat({ id: getId(), type, position, data: { ...defaults } }));
+      setNodes((nds) => nds.concat(createNode(getId(), type, position)));
+      setHasUnsavedChanges(true);
     },
     [reactFlowInstance, setNodes]
   );
@@ -110,10 +129,13 @@ export default function IVRBuilderPage() {
     try {
       if (currentFlowId) {
         await updateFlow({ id: currentFlowId, name: flowName, description: flowDescription, flowData }).unwrap();
-        setMsg({ type: 'success', text: 'Flow saved' });
+        setHasUnsavedChanges(false);
+        if (flowActive) setFlowHasDraft(true);
+        setMsg({ type: 'success', text: flowActive ? 'Draft saved — publish to push live' : 'Flow saved' });
       } else {
         const result = await createFlow({ name: flowName, description: flowDescription, flowData }).unwrap();
         setCurrentFlowId(result.id);
+        setHasUnsavedChanges(false);
         setMsg({ type: 'success', text: 'Flow created' });
       }
     } catch (err) {
@@ -126,18 +148,38 @@ export default function IVRBuilderPage() {
     setCurrentFlowId(flow.id);
     setFlowName(flow.name);
     setFlowDescription(flow.description || '');
+    setCurrentFlowPhone(flow.phoneNumber || null);
+    setFlowActive(!!flow.active);
+    setFlowHasDraft(!!flow.hasDraft);
+    setFlowPublishedAt(flow.publishedAt || null);
+    setHasUnsavedChanges(false);
     // Fetch full flow data
     try {
       const res = await fetch(
-        `https://${process.env.NEXT_PUBLIC_API_HOST}:${process.env.NEXT_PUBLIC_API_PORT}/api/ivr/${flow.id}`,
+        `/api/ivr/${flow.id}`,
         { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }
       );
-      const full = await res.json();
-      if (full.flowData?.nodes) {
-        setNodes(full.flowData.nodes);
-        setEdges(full.flowData.edges || []);
+      if (res.status === 401) {
+        localStorage.removeItem('token');
+        router.push('/login');
+        return;
       }
-    } catch { /* noop */ }
+      const full = await res.json();
+      // Handle flowData whether it comes as a string or parsed object
+      let flowData;
+      try {
+        flowData = typeof full.flowData === 'string' ? JSON.parse(full.flowData) : full.flowData;
+      } catch (parseErr) {
+        console.error('Error parsing flowData:', parseErr.message);
+        flowData = null;
+      }
+      if (flowData?.nodes) {
+        setNodes(flowData.nodes);
+        setEdges(flowData.edges || []);
+      }
+    } catch (err) {
+      console.error('Error loading flow:', err.message || err);
+    }
     setShowFlowList(false);
     setMsg({ type: '', text: '' });
   };
@@ -147,8 +189,13 @@ export default function IVRBuilderPage() {
     setCurrentFlowId(null);
     setFlowName('Untitled Flow');
     setFlowDescription('');
-    setNodes(DEFAULT_FLOW.nodes);
-    setEdges(DEFAULT_FLOW.edges);
+    setCurrentFlowPhone(null);
+    setFlowActive(false);
+    setFlowHasDraft(false);
+    setFlowPublishedAt(null);
+    setHasUnsavedChanges(false);
+    setNodes([]);
+    setEdges([]);
     setShowFlowList(false);
     setSelectedNode(null);
     setMsg({ type: '', text: '' });
@@ -156,23 +203,36 @@ export default function IVRBuilderPage() {
 
   // ── Delete flow ──
   const handleDelete = async (id) => {
-    if (!confirm('Delete this flow?')) return;
+    if (!window.confirm('Delete this flow?')) return;
     try {
       await deleteFlow(id).unwrap();
       if (currentFlowId === id) handleNewFlow();
     } catch { /* noop */ }
   };
 
-  // ── Publish ──
+  // ── Publish (from modal) ──
   const handlePublish = async () => {
     const targetId = publishTargetId || currentFlowId;
     if (!publishNumber || !targetId) return;
     try {
+      // Save draft first if this is the currently edited flow with unsaved changes
+      if (targetId === currentFlowId && hasUnsavedChanges) {
+        await updateFlow({ id: currentFlowId, name: flowName, description: flowDescription, flowData: { nodes, edges } }).unwrap();
+      }
       await publishFlow({ id: targetId, phoneNumber: publishNumber }).unwrap();
       setShowPublishModal(false);
       setPublishTargetId(null);
+      // Update editor state if this was the current flow
+      if (targetId === currentFlowId) {
+        setCurrentFlowPhone(publishNumber);
+        setFlowActive(true);
+        setFlowHasDraft(false);
+        setHasUnsavedChanges(false);
+        setFlowPublishedAt(new Date().toISOString());
+      }
       setPublishNumber('');
-      setMsg({ type: 'success', text: `Published to ${publishNumber}` });
+      refetchFlows();
+      setMsg({ type: 'success', text: `Published to ${formatPhoneDisplay(publishNumber)}` });
     } catch (err) {
       setMsg({ type: 'error', text: err?.data?.error || 'Failed to publish' });
     }
@@ -182,6 +242,11 @@ export default function IVRBuilderPage() {
   const handleUnpublish = async (id) => {
     try {
       await unpublishFlow(id).unwrap();
+      // Update editor state if this was the current flow
+      if (id === currentFlowId) {
+        setFlowActive(false);
+        setFlowPublishedAt(null);
+      }
     } catch { /* noop */ }
   };
 
@@ -226,10 +291,12 @@ export default function IVRBuilderPage() {
               >
                 {/* Status bar */}
                 {flow.active && (
-                  <div className="flex items-center justify-between rounded-t-[14px] bg-telnyx-green px-4 py-2">
+                  <div className={`flex items-center justify-between rounded-t-[14px] px-4 py-2 ${flow.hasDraft ? 'bg-yellow-500' : 'bg-telnyx-green'}`}>
                     <div className="flex items-center gap-2 text-white">
                       <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
-                      <span className="text-xs font-bold uppercase tracking-wider">Active</span>
+                      <span className="text-xs font-bold uppercase tracking-wider">
+                        {flow.hasDraft ? 'Live — Draft Available' : 'Live'}
+                      </span>
                     </div>
                     <span className="rounded bg-white/20 px-2 py-0.5 font-mono text-xs text-white">
                       {formatPhoneDisplay(flow.phoneNumber)}
@@ -241,12 +308,19 @@ export default function IVRBuilderPage() {
                   <div className="flex-1 cursor-pointer" onClick={() => handleLoadFlow(flow)}>
                     <h3 className="text-sm font-semibold text-gray-900">{flow.name}</h3>
                     {flow.description && <p className="mt-0.5 text-xs text-gray-400">{flow.description}</p>}
-                    {!flow.active && (
-                      <p className="mt-1 text-[10px] text-gray-300">
-                        {flow.phoneNumber
-                          ? `Last assigned to ${formatPhoneDisplay(flow.phoneNumber)} (inactive)`
-                          : 'Not assigned to any number'}
+                    {flow.active && flow.phoneNumber && (
+                      <p className="mt-1 text-[10px] text-telnyx-green font-medium">
+                        Published to {formatPhoneDisplay(flow.phoneNumber)}
+                        {flow.publishedAt && ` — ${new Date(flow.publishedAt).toLocaleDateString()}`}
                       </p>
+                    )}
+                    {!flow.active && flow.phoneNumber && (
+                      <p className="mt-1 text-[10px] text-gray-300">
+                        Last published to {formatPhoneDisplay(flow.phoneNumber)} (inactive)
+                      </p>
+                    )}
+                    {!flow.phoneNumber && (
+                      <p className="mt-1 text-[10px] text-gray-300">Not assigned to any number</p>
                     )}
                     <p className="mt-0.5 text-[10px] text-gray-300">Updated {new Date(flow.updatedAt).toLocaleString()}</p>
                   </div>
@@ -343,7 +417,7 @@ export default function IVRBuilderPage() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <button
-            onClick={() => setShowFlowList(true)}
+            onClick={async () => { await refetchFlows(); setShowFlowList(true); }}
             className="rounded-btn border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
           >
             ← All Flows
@@ -364,26 +438,122 @@ export default function IVRBuilderPage() {
           />
         </div>
         <div className="flex items-center gap-2">
+          {/* Status badge */}
+          {currentFlowId && (
+            flowActive && !flowHasDraft && !hasUnsavedChanges ? (
+              <span className="rounded-full bg-telnyx-green/10 px-2.5 py-0.5 text-[10px] font-semibold text-telnyx-green">
+                Live
+              </span>
+            ) : flowActive && (flowHasDraft || hasUnsavedChanges) ? (
+              <span className="rounded-full bg-yellow-100 px-2.5 py-0.5 text-[10px] font-semibold text-yellow-700">
+                {hasUnsavedChanges ? 'Unsaved changes' : 'Unpublished draft'}
+              </span>
+            ) : (
+              <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-[10px] font-semibold text-gray-500">
+                Draft
+              </span>
+            )
+          )}
+
           {msg.text && (
             <span className={`text-xs ${msg.type === 'error' ? 'text-red-500' : 'text-telnyx-green'}`}>
               {msg.text}
             </span>
           )}
+
+          {/* Save (always available) */}
           <button
             onClick={handleSave}
             disabled={creating || updating}
             className="rounded-btn bg-gray-900 px-4 py-1.5 text-xs font-medium text-white hover:bg-gray-700 disabled:opacity-50"
           >
-            {creating || updating ? 'Saving...' : 'Save'}
+            {creating || updating ? 'Saving...' : 'Save Draft'}
           </button>
-          {currentFlowId && (
-            <button
-              onClick={() => { setPublishTargetId(currentFlowId); setShowPublishModal(true); }}
-              className="rounded-btn bg-telnyx-green px-4 py-1.5 text-xs font-medium text-white hover:bg-telnyx-green/90"
-            >
-              Publish
-            </button>
-          )}
+
+          {currentFlowId && (() => {
+            // Active with no changes → Unpublish
+            if (flowActive && !flowHasDraft && !hasUnsavedChanges) {
+              return (
+                <button
+                  onClick={async () => {
+                    try {
+                      await unpublishFlow(currentFlowId).unwrap();
+                      setFlowActive(false);
+                      setFlowPublishedAt(null);
+                      refetchFlows();
+                      setMsg({ type: 'success', text: 'Flow unpublished' });
+                    } catch (err) {
+                      setMsg({ type: 'error', text: err?.data?.error || 'Failed to unpublish' });
+                    }
+                  }}
+                  className="rounded-btn border border-orange-300 px-4 py-1.5 text-xs font-medium text-orange-500 hover:bg-orange-50"
+                >
+                  Unpublish
+                </button>
+              );
+            }
+            // Has draft changes → Publish
+            if (flowActive && (flowHasDraft || hasUnsavedChanges)) {
+              return (
+                <button
+                  onClick={async () => {
+                    try {
+                      // Save first if unsaved
+                      if (hasUnsavedChanges) {
+                        await updateFlow({ id: currentFlowId, name: flowName, description: flowDescription, flowData: { nodes, edges } }).unwrap();
+                      }
+                      await publishFlow({ id: currentFlowId, phoneNumber: currentFlowPhone }).unwrap();
+                      setFlowHasDraft(false);
+                      setHasUnsavedChanges(false);
+                      setFlowActive(true);
+                      setFlowPublishedAt(new Date().toISOString());
+                      refetchFlows();
+                      setMsg({ type: 'success', text: `Published to ${formatPhoneDisplay(currentFlowPhone)}` });
+                    } catch (err) {
+                      setMsg({ type: 'error', text: err?.data?.error || 'Failed to publish' });
+                    }
+                  }}
+                  className="rounded-btn bg-telnyx-green px-4 py-1.5 text-xs font-medium text-white hover:bg-telnyx-green/90"
+                >
+                  Publish Changes
+                </button>
+              );
+            }
+            // Not active → Publish (needs number)
+            if (!flowActive) {
+              return currentFlowPhone ? (
+                <button
+                  onClick={async () => {
+                    try {
+                      if (hasUnsavedChanges) {
+                        await updateFlow({ id: currentFlowId, name: flowName, description: flowDescription, flowData: { nodes, edges } }).unwrap();
+                      }
+                      await publishFlow({ id: currentFlowId, phoneNumber: currentFlowPhone }).unwrap();
+                      setFlowActive(true);
+                      setFlowHasDraft(false);
+                      setHasUnsavedChanges(false);
+                      setFlowPublishedAt(new Date().toISOString());
+                      refetchFlows();
+                      setMsg({ type: 'success', text: `Published to ${formatPhoneDisplay(currentFlowPhone)}` });
+                    } catch (err) {
+                      setMsg({ type: 'error', text: err?.data?.error || 'Failed to publish' });
+                    }
+                  }}
+                  className="rounded-btn bg-telnyx-green px-4 py-1.5 text-xs font-medium text-white hover:bg-telnyx-green/90"
+                >
+                  Publish to {formatPhoneDisplay(currentFlowPhone)}
+                </button>
+              ) : (
+                <button
+                  onClick={() => { setPublishTargetId(currentFlowId); setPublishNumber(''); setShowPublishModal(true); }}
+                  className="rounded-btn bg-telnyx-green px-4 py-1.5 text-xs font-medium text-white hover:bg-telnyx-green/90"
+                >
+                  Publish
+                </button>
+              );
+            }
+            return null;
+          })()}
         </div>
       </div>
 
@@ -394,24 +564,51 @@ export default function IVRBuilderPage() {
           <div className="bg-gray-950 px-3 py-2 rounded-t-card">
             <h2 className="text-xs font-semibold text-white">Nodes</h2>
           </div>
-          <div className="p-2 space-y-0.5">
-            {NODE_PALETTE.map((item) => (
-              <div
-                key={item.type}
-                draggable
-                onDragStart={(e) => {
-                  e.dataTransfer.setData('application/reactflow', JSON.stringify({ type: item.type, defaults: item.defaults }));
-                  e.dataTransfer.effectAllowed = 'move';
-                }}
-                className="flex items-center gap-2 rounded-btn px-2.5 py-1.5 text-[11px] font-medium text-gray-700 bg-gray-50 hover:bg-gray-100 cursor-grab active:cursor-grabbing transition-colors"
-              >
-                <span
-                  className="h-2 w-2 rounded-full flex-shrink-0"
-                  style={{ backgroundColor: CATEGORY_COLORS[item.category] }}
-                />
-                {item.label}
-              </div>
-            ))}
+          <div className="p-2 space-y-1">
+            {(() => {
+              const SECTION_LABELS = {
+                trigger: 'Trigger',
+                action: 'Call Control',
+                media: 'Media',
+                routing: 'Routing & Gather',
+                recording: 'Recording',
+                streaming: 'Streaming',
+                ai: 'AI',
+                conference: 'Conference',
+                end: 'End Call',
+              };
+              let lastCategory = '';
+              return NODE_PALETTE.map((item) => {
+                const showHeader = item.category !== lastCategory;
+                lastCategory = item.category;
+                return (
+                  <div key={item.type}>
+                    {showHeader && (
+                      <div className="flex items-center gap-1.5 px-1 pt-2 pb-0.5">
+                        <span className="h-1.5 w-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: CATEGORY_COLORS[item.category] }} />
+                        <span className="text-[9px] font-bold uppercase tracking-wider text-gray-400">
+                          {SECTION_LABELS[item.category] || item.category}
+                        </span>
+                      </div>
+                    )}
+                    <div
+                      draggable
+                      onDragStart={(e) => {
+                        e.dataTransfer.setData('application/reactflow', JSON.stringify({ type: item.type, defaults: item.defaults }));
+                        e.dataTransfer.effectAllowed = 'move';
+                      }}
+                      className="flex items-center gap-2 rounded-btn px-2.5 py-1.5 text-[11px] font-medium text-gray-700 bg-gray-50 hover:bg-gray-100 cursor-grab active:cursor-grabbing transition-colors"
+                    >
+                      <span
+                        className="h-2 w-2 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: CATEGORY_COLORS[item.category] }}
+                      />
+                      {item.label}
+                    </div>
+                  </div>
+                );
+              });
+            })()}
           </div>
         </div>
 
@@ -456,6 +653,47 @@ export default function IVRBuilderPage() {
                 <button onClick={() => deleteNode(selectedNode.id)} className="text-[10px] text-red-400 hover:text-red-600 font-medium">Delete</button>
               </div>
               {Object.entries(selectedNode.data).map(([key, value]) => {
+                // Enum dropdowns for known fields
+                const ENUM_OPTIONS = {
+                  record: ['', 'record-from-answer', 'record-from-ringing'],
+                  recordFormat: ['mp3', 'wav'],
+                  recordChannels: ['single', 'dual'],
+                  recordTrack: ['both', 'inbound', 'outbound'],
+                  recordTrim: ['', 'trim-silence'],
+                  cause: ['CALL_REJECTED', 'USER_BUSY', 'NORMAL_CLEARING'],
+                  payloadType: ['text', 'ssml'],
+                  serviceLevel: ['basic', 'premium'],
+                  targetLegs: ['self', 'opposite', 'both'],
+                  parkAfterUnbridge: ['', 'self', 'opposite'],
+                  muteDtmf: ['none', 'both', 'self', 'opposite'],
+                  streamTrack: ['', 'inbound_track', 'outbound_track', 'both_tracks'],
+                  streamType: ['decrypted', 'raw'],
+                  direction: ['incoming', 'outgoing', 'both', 'inbound', 'outbound'],
+                  transcriptionEngine: ['Telnyx', 'Google', 'Deepgram', 'Azure'],
+                  transcriptionTracks: ['inbound', 'outbound', 'both'],
+                  engine: ['Krisp', 'Denoiser', 'DeepFilterNet'],
+                  beepEnabled: ['always', 'never', 'on_enter', 'on_exit'],
+                  answeringMachineDetection: ['', 'detect', 'detect_beep', 'detect_words', 'greeting_end', 'premium'],
+                  format: ['mp3', 'wav'],
+                  channels: ['single', 'dual'],
+                  recordingTrack: ['both', 'inbound', 'outbound'],
+                  audioType: ['', 'mp3', 'wav'],
+                };
+                if (ENUM_OPTIONS[key]) {
+                  return (
+                    <div key={key}>
+                      <label className="block text-[10px] font-medium text-gray-500 mb-0.5">
+                        {key.replace(/([A-Z])/g, ' $1').replace(/^./, (s) => s.toUpperCase())}
+                      </label>
+                      <select value={value} onChange={(e) => updateNodeData(selectedNode.id, key, e.target.value)}
+                        className="w-full rounded-btn border border-gray-300 px-2 py-1 text-[11px] focus:border-telnyx-green focus:outline-none">
+                        {ENUM_OPTIONS[key].map((opt) => (
+                          <option key={opt} value={opt}>{opt || '(none)'}</option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                }
                 if (key === 'payload') {
                   return (
                     <div key={key}>
@@ -466,12 +704,49 @@ export default function IVRBuilderPage() {
                   );
                 }
                 if (key === 'voice') {
+                  const providers = Object.keys(voicesData);
+                  const selectedLang = selectedNode.data.language || 'en-US';
                   return (
                     <div key={key}>
                       <label className="block text-[10px] font-medium text-gray-500 mb-0.5">Voice</label>
                       <select value={value} onChange={(e) => updateNodeData(selectedNode.id, key, e.target.value)}
                         className="w-full rounded-btn border border-gray-300 px-2 py-1 text-[11px] focus:border-telnyx-green focus:outline-none">
-                        <option value="female">Female</option><option value="male">Male</option>
+                        <option value="female">Default Female</option>
+                        <option value="male">Default Male</option>
+                        {providers.flatMap((provider) => {
+                          const filtered = (voicesData[provider] || []).filter((v) =>
+                            v.language && (v.language === selectedLang || v.language.startsWith(selectedLang.split('-')[0]))
+                          );
+                          if (filtered.length === 0) return [];
+                          // Group Telnyx voices by kind (e.g. Natural, NaturalHD, Ultra)
+                          if (provider.toLowerCase() === 'telnyx') {
+                            const byKind = {};
+                            filtered.forEach((v) => {
+                              const parts = (v.id || '').split('.');
+                              const kind = parts.length >= 3 ? parts[1] : 'Other';
+                              if (!byKind[kind]) byKind[kind] = [];
+                              byKind[kind].push(v);
+                            });
+                            return Object.entries(byKind).map(([kind, voices]) => (
+                              <optgroup key={`telnyx-${kind}`} label={`Telnyx ${kind}`}>
+                                {voices.map((v, idx) => (
+                                  <option key={`telnyx-${kind}-${v.id}-${idx}`} value={v.id}>
+                                    {v.name} ({v.gender || '?'}) — {v.language}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            ));
+                          }
+                          return [(
+                            <optgroup key={provider} label={provider.charAt(0).toUpperCase() + provider.slice(1)}>
+                              {filtered.map((v, idx) => (
+                                <option key={`${provider}-${v.id}-${idx}`} value={v.id}>
+                                  {v.name} ({v.gender || '?'}) — {v.language}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )];
+                        })}
                       </select>
                     </div>
                   );
@@ -486,6 +761,54 @@ export default function IVRBuilderPage() {
                         <option value="es-ES">Spanish</option><option value="fr-FR">French</option>
                         <option value="de-DE">German</option><option value="pt-BR">Portuguese</option>
                       </select>
+                    </div>
+                  );
+                }
+                // Audio URL fields — toggle between file picker and manual URL
+                const AUDIO_URL_FIELDS = ['audioUrl', 'holdMusicUrl', 'invalidAudioUrl'];
+                if (AUDIO_URL_FIELDS.includes(key)) {
+                  const label = key.replace(/([A-Z])/g, ' $1').replace(/^./, (s) => s.toUpperCase());
+                  const isFile = audioFiles.some((f) => f.url === value);
+                  const modeKey = `${selectedNode.id}_${key}`;
+                  const forceUrl = urlModeFields[modeKey];
+                  const showFile = audioFiles.length > 0 && !forceUrl && (isFile || !value);
+                  return (
+                    <div key={key}>
+                      <div className="flex items-center justify-between mb-0.5">
+                        <label className="text-[10px] font-medium text-gray-500">{label}</label>
+                        {audioFiles.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setUrlModeFields((prev) => ({ ...prev, [modeKey]: !showFile ? false : true }));
+                              if (showFile) updateNodeData(selectedNode.id, key, '');
+                            }}
+                            className="text-[9px] text-telnyx-green hover:underline"
+                          >
+                            {showFile ? 'Use URL' : 'Use File'}
+                          </button>
+                        )}
+                      </div>
+                      {showFile ? (
+                        <select
+                          value={value}
+                          onChange={(e) => updateNodeData(selectedNode.id, key, e.target.value)}
+                          className="w-full rounded-btn border border-gray-300 px-2 py-1 text-[11px] focus:border-telnyx-green focus:outline-none"
+                        >
+                          <option value="">(none)</option>
+                          {audioFiles.map((f) => (
+                            <option key={f.fileName} value={f.url}>{f.originalName}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          value={value}
+                          placeholder="https://example.com/audio.mp3"
+                          onChange={(e) => updateNodeData(selectedNode.id, key, e.target.value)}
+                          className="w-full rounded-btn border border-gray-300 px-2 py-1 text-[11px] text-gray-900 focus:border-telnyx-green focus:outline-none"
+                        />
+                      )}
                     </div>
                   );
                 }

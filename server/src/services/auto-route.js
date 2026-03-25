@@ -5,6 +5,7 @@ import User from '../../models/User.js';
 import Voice from '../../models/Voice.js';
 import Conversations from '../../models/Conversations.js';
 import { broadcast } from '../../routes/websocket.js';
+import { holdMusicCache } from './ivr-engine.js';
 
 /**
  * Try to route a queued call to an available agent.
@@ -79,18 +80,25 @@ export async function routeCallToAgent(callControlId, excludeAgents = []) {
 
   try {
     const telnyx = await getOrgTelnyxClient();
-    await telnyx.calls.dial({
+    const dialResponse = await telnyx.calls.dial({
       connection_id: availableAgent.appConnectionId,
       to: `sip:${availableAgent.sipUsername}@sip.telnyx.com`,
       from: fromNumber,
       link_to: callControlId,
       webhook_url: webhookUrl,
+      timeout_secs: 30,
     });
+    // Store the agent's call_control_id as bridge_uuid immediately when dialing
+    const agentCallControlId = dialResponse?.data?.call_control_id;
     // Track this agent as tried
     const triedSoFar = voiceRecord.tried_agents || [];
     triedSoFar.push(availableAgent.sipUsername);
+    const updateFields = { accept_agent: availableAgent.sipUsername, tried_agents: triedSoFar };
+    if (agentCallControlId) {
+      updateFields.bridge_uuid = agentCallControlId;
+    }
     await Voice.update(
-      { accept_agent: availableAgent.sipUsername, tried_agents: triedSoFar },
+      updateFields,
       { where: { queue_uuid: callControlId } }
     );
     console.log(`[Auto-route] Dialed agent ${availableAgent.sipUsername}`);
@@ -129,38 +137,95 @@ export async function routeToNextAgent(callControlId, declinedAgent) {
   const routed = await routeCallToAgent(callControlId, triedAgents);
 
   if (!routed) {
-    console.log('[Auto-route] No more agents available, caller stays in queue with hold music');
-    try {
-      const telnyx = await getOrgTelnyxClient();
-      await telnyx.calls.actions.startPlayback(callControlId, {
-        audio_url: 'http://com.twilio.music.classical.s3.amazonaws.com/MARKOVICHAMP-Borghestral.mp3',
-      });
-    } catch (err) {
-      console.error('[Auto-route] Failed to play hold music:', err.message);
+    console.log('[Auto-route] No more agents available, caller stays in queue');
+    const cached = holdMusicCache.get(callControlId);
+    if (cached && cached.expires > Date.now()) {
+      try {
+        const telnyx = await getOrgTelnyxClient();
+        await telnyx.calls.actions.startPlayback(callControlId, {
+          audio_url: cached.url,
+        });
+      } catch (err) {
+        console.error('[Auto-route] Failed to play hold music:', err.message);
+      }
     }
   }
 }
 
 /**
- * Check all queued calls and try to route the oldest one to an available agent.
- * Called when an agent comes online.
+ * Remove a specific agent from the tried_agents list for all queued calls in a given queue.
+ * Called when an agent comes back online so they become eligible for pending calls again.
+ * @param {string} queueName - Queue name to filter calls (null = all queues)
+ * @param {string} agentId - The SIP username to remove from tried_agents lists
  */
-export async function routeQueuedCallsToAgent() {
-  const queuedCall = await Voice.findOne({
+export async function clearTriedAgentFromQueue(queueName, agentId) {
+  const where = { accept_agent: null, queue_name: { [Op.ne]: null } };
+  if (queueName) {
+    where.queue_name = queueName;
+  }
+
+  const queuedCalls = await Voice.findAll({ where });
+  let cleared = 0;
+
+  for (const call of queuedCalls) {
+    const triedAgents = call.tried_agents || [];
+    if (triedAgents.includes(agentId)) {
+      const updated = triedAgents.filter(a => a !== agentId);
+      await Voice.update(
+        { tried_agents: updated },
+        { where: { queue_uuid: call.queue_uuid } }
+      );
+      cleared++;
+    }
+  }
+
+  if (cleared > 0) {
+    console.log(`[Auto-route] Cleared agent ${agentId} from tried_agents in ${cleared} queued call(s)`);
+  }
+}
+
+/**
+ * Check all queued calls and try to route them to available agents.
+ * Called when an agent comes online.
+ * @param {string} [agentId] - Optional SIP username of the agent that just came online;
+ *   if provided, that agent is removed from tried_agents for all pending calls first.
+ */
+export async function routeQueuedCallsToAgent(agentId) {
+  // If a specific agent came online, clear them from tried_agents so they can be retried
+  if (agentId) {
+    await clearTriedAgentFromQueue(null, agentId);
+  }
+
+  const queuedCalls = await Voice.findAll({
     where: { accept_agent: null, queue_name: { [Op.ne]: null } },
     order: [['createdAt', 'ASC']],
   });
 
-  if (!queuedCall) {
+  if (queuedCalls.length === 0) {
     console.log('[Auto-route] No queued calls waiting');
     return;
   }
 
-  console.log(`[Auto-route] Found queued call ${queuedCall.queue_uuid}, attempting to route...`);
-  const routed = await routeCallToAgent(queuedCall.queue_uuid);
+  // If no specific agent provided, clear tried_agents for all queued calls
+  // (legacy behavior for generic "check for queued calls" scenarios)
+  if (!agentId) {
+    for (const call of queuedCalls) {
+      await Voice.update(
+        { tried_agents: [] },
+        { where: { queue_uuid: call.queue_uuid } }
+      );
+    }
+  }
 
-  if (!routed) {
-    console.log('[Auto-route] Could not route queued call');
+  console.log(`[Auto-route] Found ${queuedCalls.length} queued call(s), attempting to route...`);
+
+  for (const call of queuedCalls) {
+    const routed = await routeCallToAgent(call.queue_uuid);
+    if (routed) {
+      console.log(`[Auto-route] Routed queued call ${call.queue_uuid}`);
+    } else {
+      console.log(`[Auto-route] Could not route queued call ${call.queue_uuid}`);
+    }
   }
 }
 

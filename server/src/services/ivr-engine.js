@@ -4,6 +4,10 @@ import IvrFlow from '../../models/IvrFlow.js';
 // In-memory session tracking: callControlId → session
 const ivrSessions = new Map();
 
+// Hold music cache: callControlId → { url, expires }
+// TTL: 1 hour. Checked by auto-route.js and voiceRoutes.js when playing hold music.
+const holdMusicCache = new Map();
+
 // Normalize phone number: strip sip: prefix, extract E.164
 function normalizePhone(raw) {
   if (!raw) return raw;
@@ -98,6 +102,7 @@ async function handleMediaEnded(callControlId) {
 
 function endSession(callControlId) {
   ivrSessions.delete(callControlId);
+  holdMusicCache.delete(callControlId);
 }
 
 function hasSession(callControlId) {
@@ -382,6 +387,10 @@ async function executeNode(session, nodeId, ccid) {
 
       // ── Queue ──
       case 'enqueue':
+        // Cache hold music URL if configured (1-hour TTL)
+        if (d.holdMusicUrl) {
+          holdMusicCache.set(ccid, { url: d.holdMusicUrl, expires: Date.now() + 3600000 });
+        }
         await telnyx.calls.actions.enqueue(ccid, clean({
           queue_name: d.queueName || 'General_Queue',
           max_size: d.maxSize ? parseInt(d.maxSize) : undefined,
@@ -562,4 +571,4 @@ async function executeNode(session, nodeId, ccid) {
   }
 }
 
-export { getActiveFlow, startSession, handleGatherResult, handleMediaEnded, endSession, hasSession };
+export { getActiveFlow, startSession, handleGatherResult, handleMediaEnded, endSession, hasSession, holdMusicCache };

@@ -15,7 +15,7 @@ const handle = app.getRequestHandler();
 
 // Cert locations to try in order
 const CERT_PATHS = [
-  { key: '/etc/letsencrypt/live/telnyx.solutions/privkey.pem', cert: '/etc/letsencrypt/live/telnyx.solutions/fullchain.pem' },
+  { key: '/etc/letsencrypt/live/app.telnyx.solutions/privkey.pem', cert: '/etc/letsencrypt/live/app.telnyx.solutions/fullchain.pem' },
   { key: path.join(__dirname, 'certs', 'key.pem'), cert: path.join(__dirname, 'certs', 'cert.pem') },
 ];
 

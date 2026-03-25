@@ -1,9 +1,9 @@
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
 
-const baseQuery = fetchBaseQuery({
-  baseUrl: `https://${process.env.NEXT_PUBLIC_API_HOST || process.env.REACT_APP_API_HOST}:${process.env.NEXT_PUBLIC_API_PORT || process.env.REACT_APP_API_PORT}/api`,
+const rawBaseQuery = fetchBaseQuery({
+  baseUrl: '/api',
   prepareHeaders: (headers, { getState }) => {
-    const token = getState().auth.token;
+    const token = getState().auth?.token;
     if (token) {
       headers.set('Authorization', `Bearer ${token}`);
     }
@@ -11,12 +11,27 @@ const baseQuery = fetchBaseQuery({
   },
 });
 
+const baseQuery = async (args, api, extraOptions) => {
+  try {
+    const result = await rawBaseQuery(args, api, extraOptions);
+    if (result.error) {
+      const status = result.error.status;
+      if (status === 'PARSING_ERROR' || status === 'FETCH_ERROR') {
+        return { error: { status, data: result.error.data || 'Network error' } };
+      }
+    }
+    return result;
+  } catch (err) {
+    return { error: { status: 'FETCH_ERROR', data: err.message || 'Network error' } };
+  }
+};
+
 export const api = createApi({
   reducerPath: 'api',
   baseQuery,
   refetchOnFocus: true,
   refetchOnReconnect: true,
-  tagTypes: ['Agents', 'QueueCalls', 'Conversations', 'Messages', 'CallHistory', 'MyNumbers', 'IvrFlows', 'Recordings', 'AdminUsers', 'AdminMetrics', 'AdminReports', 'AdminSettings'],
+  tagTypes: ['Agents', 'QueueCalls', 'Conversations', 'Messages', 'CallHistory', 'MyNumbers', 'IvrFlows', 'Recordings', 'AdminUsers', 'AdminMetrics', 'AdminReports', 'AdminSettings', 'AudioFiles'],
   endpoints: (builder) => ({
     // Agents
     getAgents: builder.query({
@@ -217,6 +232,34 @@ export const api = createApi({
       providesTags: ['AdminReports'],
     }),
 
+    // Audio Files
+    getAudioFiles: builder.query({
+      query: () => '/audio',
+      providesTags: ['AudioFiles'],
+    }),
+    uploadAudioFile: builder.mutation({
+      query: (formData) => ({
+        url: '/audio',
+        method: 'POST',
+        body: formData,
+        formData: true,
+      }),
+      invalidatesTags: ['AudioFiles'],
+    }),
+    deleteAudioFile: builder.mutation({
+      query: (filename) => ({
+        url: `/audio/${encodeURIComponent(filename)}`,
+        method: 'DELETE',
+      }),
+      invalidatesTags: ['AudioFiles'],
+    }),
+    createAudioBucket: builder.mutation({
+      query: () => ({
+        url: '/audio/create-bucket',
+        method: 'POST',
+      }),
+    }),
+
     // User data
     getUserData: builder.query({
       query: (username) => `/users/user_data/${username}`,
@@ -273,10 +316,38 @@ export const api = createApi({
       }),
       invalidatesTags: ['MyNumbers'],
     }),
+    assignMessagingProfile: builder.mutation({
+      query: (body) => ({
+        url: '/users/assign-messaging-profile',
+        method: 'POST',
+        body,
+      }),
+      invalidatesTags: ['MyNumbers'],
+    }),
+    unassignMessagingProfile: builder.mutation({
+      query: (body) => ({
+        url: '/users/unassign-messaging-profile',
+        method: 'POST',
+        body,
+      }),
+      invalidatesTags: ['MyNumbers'],
+    }),
+    updateNumber: builder.mutation({
+      query: (body) => ({
+        url: '/users/update-number',
+        method: 'PATCH',
+        body,
+      }),
+      invalidatesTags: ['MyNumbers'],
+    }),
   }),
 });
 
 export const {
+  useGetAudioFilesQuery,
+  useUploadAudioFileMutation,
+  useDeleteAudioFileMutation,
+  useCreateAudioBucketMutation,
   useGetOrgSettingsQuery,
   useUpdateOrgSettingsMutation,
   useGetAdminUsersQuery,
@@ -307,6 +378,9 @@ export const {
   useReleaseNumberMutation,
   useAssignNumberMutation,
   useUnassignNumberMutation,
+  useAssignMessagingProfileMutation,
+  useUnassignMessagingProfileMutation,
+  useUpdateNumberMutation,
   useGetIvrFlowsQuery,
   useGetIvrFlowQuery,
   useCreateIvrFlowMutation,

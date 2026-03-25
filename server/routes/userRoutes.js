@@ -41,6 +41,7 @@ async function provisionAgentConnections(sipUsername, sipPassword, prefix = 'age
   const webhookBase = getWebhookBaseUrl();
   const voiceWebhookUrl = `${webhookBase}/api/voice/webhook`;
   const webrtcWebhookUrl = `${webhookBase}/api/voice/outbound-webrtc`;
+  const messagingWebhookUrl = `${webhookBase}/api/conversations/webhook`;
   const ts = Date.now().toString(36);
 
   // Create Outbound Voice Profile (all destinations enabled)
@@ -96,16 +97,17 @@ async function provisionAgentConnections(sipUsername, sipPassword, prefix = 'age
     console.error(`[Provision] SIP Connection failed for ${sipUsername}:`, err.raw?.errors?.[0]?.detail || err.message);
   }
 
-  // Create Messaging Profile (all destinations enabled)
+  // Create Messaging Profile (all destinations enabled, with webhook)
   let messagingProfileId = null;
   try {
     const mp = await orgTelnyx.messagingProfiles.create({
       name: `${prefix}_MsgProfile_${ts}_${sipUsername}`,
       enabled: true,
       whitelisted_destinations: ['*'],
+      webhook_url: messagingWebhookUrl,
     });
     messagingProfileId = mp.data?.id;
-    console.log(`[Provision] Created Messaging Profile for ${sipUsername}: ${messagingProfileId}`);
+    console.log(`[Provision] Created Messaging Profile for ${sipUsername}: ${messagingProfileId} (webhook: ${messagingWebhookUrl})`);
   } catch (err) {
     console.error(`[Provision] Messaging Profile failed for ${sipUsername}:`, err.raw?.errors?.[0]?.detail || err.message);
   }
@@ -168,9 +170,11 @@ router.get('/user_data/:username', async (req, res) => {
     const user = await User.findOne({ where: { username } });
 
     if (user) {
-      let base64Avatar = '';
+      let avatarValue = '';
       if (user.avatar) {
-        base64Avatar = `data:image/jpeg;base64,${user.avatar.toString('base64')}`;
+        avatarValue = `data:image/jpeg;base64,${user.avatar.toString('base64')}`;
+      } else if (user.googleAvatarUrl) {
+        avatarValue = user.googleAvatarUrl;
       }
       // Only return sensitive fields if the requester is the same user (authenticated)
       const authHeader = req.headers.authorization;
@@ -181,7 +185,7 @@ router.get('/user_data/:username', async (req, res) => {
         } catch { return false; }
       })();
       const response = {
-        avatar: base64Avatar,
+        avatar: avatarValue,
         firstName: user.firstName,
         lastName: user.lastName,
         phoneNumber: user.phoneNumber,
@@ -257,8 +261,8 @@ router.post('/login', async (req, res) => {
         onboardingComplete: !!user.onboardingComplete,
       });
 
-      // Check for queued calls on login
-      routeQueuedCallsToAgent().catch(err =>
+      // Check for queued calls on login — pass agent's sipUsername to clear tried_agents
+      routeQueuedCallsToAgent(user.sipUsername).catch(err =>
         console.error('[Auto-route] Error routing on login:', err.message)
       );
     } catch (err) {
@@ -296,6 +300,9 @@ router.post('/google-auth', async (req, res) => {
       if (user) {
         // Link Google account to existing user
         user.googleId = googleId;
+        if (!user.googleAvatarUrl && picture) {
+          user.googleAvatarUrl = picture;
+        }
         await user.save();
       } else {
         // Check org API key before allowing SSO registration
@@ -316,6 +323,7 @@ router.post('/google-auth', async (req, res) => {
           firstName: given_name || email.split('@')[0],
           lastName: family_name || '',
           googleId,
+          googleAvatarUrl: picture || null,
           sipUsername,
           sipPassword: encryptedSipPassword,
           status: 'online',
@@ -335,6 +343,11 @@ router.post('/google-auth', async (req, res) => {
       }
     }
 
+    // Update Google avatar URL if it changed or was missing
+    if (picture && user.googleAvatarUrl !== picture) {
+      user.googleAvatarUrl = picture;
+    }
+
     // Set user online
     user.status = 'online';
     await user.save();
@@ -343,11 +356,12 @@ router.post('/google-auth', async (req, res) => {
     // Generate JWT
     const token = jwt.sign({ username: user.username, role: user.role || 'agent' }, env.JWT_SECRET, { expiresIn: '1h' });
 
+    // Prefer uploaded avatar (BLOB), fall back to Google profile picture URL
     let avatarUrl = null;
     if (user.avatar) {
       avatarUrl = `data:image/jpeg;base64,${user.avatar.toString('base64')}`;
-    } else if (picture) {
-      avatarUrl = picture;
+    } else if (user.googleAvatarUrl) {
+      avatarUrl = user.googleAvatarUrl;
     }
 
     res.status(200).json({
@@ -364,7 +378,7 @@ router.post('/google-auth', async (req, res) => {
       onboardingComplete: !!user.onboardingComplete,
     });
 
-    routeQueuedCallsToAgent().catch(err =>
+    routeQueuedCallsToAgent(user.sipUsername).catch(err =>
       console.error('[Auto-route] Error routing on Google login:', err.message)
     );
   } catch (err) {
@@ -457,6 +471,62 @@ router.put('/update/:username', authenticate, async (req, res) => {
         }
       }
 
+      // Verify and fix webhooks on existing connections
+      if (user.sipUsername && (user.messagingProfileId || user.appConnectionId || user.webrtcConnectionId)) {
+        try {
+          const { getOrgTelnyxClient, getWebhookBaseUrl } = await import('../src/services/org-telnyx.js');
+          const orgTelnyx = await getOrgTelnyxClient();
+          const webhookBase = getWebhookBaseUrl();
+
+          // Fix messaging profile webhook
+          if (user.messagingProfileId) {
+            try {
+              const mp = await orgTelnyx.messagingProfiles.retrieve(user.messagingProfileId);
+              const expectedUrl = `${webhookBase}/api/conversations/webhook`;
+              if (mp.data?.webhook_url !== expectedUrl) {
+                await orgTelnyx.messagingProfiles.update(user.messagingProfileId, {
+                  webhook_url: expectedUrl,
+                  whitelisted_destinations: mp.data?.whitelisted_destinations || ['*'],
+                });
+                console.log(`[Profile] Fixed messaging webhook for ${username}`);
+              }
+            } catch (err) {
+              console.warn(`[Profile] Could not verify messaging webhook for ${username}:`, err.message);
+            }
+          }
+
+          // Fix voice app webhook
+          if (user.appConnectionId) {
+            try {
+              const app = await orgTelnyx.callControlApplications.retrieve(user.appConnectionId);
+              const expectedUrl = `${webhookBase}/api/voice/webhook`;
+              if (app.data?.webhook_event_url !== expectedUrl) {
+                await orgTelnyx.callControlApplications.update(user.appConnectionId, { webhook_event_url: expectedUrl });
+                console.log(`[Profile] Fixed voice app webhook for ${username}`);
+              }
+            } catch (err) {
+              console.warn(`[Profile] Could not verify voice app webhook for ${username}:`, err.message);
+            }
+          }
+
+          // Fix SIP credential webhook
+          if (user.webrtcConnectionId) {
+            try {
+              const conn = await orgTelnyx.credentialConnections.retrieve(user.webrtcConnectionId);
+              const expectedUrl = `${webhookBase}/api/voice/outbound-webrtc`;
+              if (conn.data?.webhook_event_url !== expectedUrl) {
+                await orgTelnyx.credentialConnections.update(user.webrtcConnectionId, { webhook_event_url: expectedUrl });
+                console.log(`[Profile] Fixed SIP credential webhook for ${username}`);
+              }
+            } catch (err) {
+              console.warn(`[Profile] Could not verify SIP webhook for ${username}:`, err.message);
+            }
+          }
+        } catch (err) {
+          console.warn(`[Profile] Webhook verification skipped:`, err.message);
+        }
+      }
+
       res.status(200).json({
         message: "User updated",
         webrtcConnectionId: user.webrtcConnectionId || null,
@@ -500,9 +570,9 @@ router.patch('/update-status/:username', authenticate, async (req, res) => {
         assignedQueue: user.assignedQueue,
       });
 
-      // When agent comes online, check for queued calls
+      // When agent comes online, check for queued calls — pass sipUsername to clear tried_agents
       if (status === 'online') {
-        routeQueuedCallsToAgent().catch(err =>
+        routeQueuedCallsToAgent(user.sipUsername).catch(err =>
           console.error('[Auto-route] Error routing on status change:', err.message)
         );
       }
@@ -572,12 +642,23 @@ router.get('/messaging-numbers', authenticate, async (req, res) => {
   try {
     const { getOrgTelnyxClient } = await import('../src/services/org-telnyx.js');
     const orgTelnyx = await getOrgTelnyxClient();
+
+    // If ?all=true (admin use), return all numbers with messaging profiles
+    // Otherwise filter to only numbers assigned to the logged-in user's messaging profile
+    const showAll = req.query.all === 'true';
+    const user = await User.findOne({ where: { username: req.user.username } });
+
     const response = await orgTelnyx.phoneNumbers.list({
       'page[size]': 250,
     });
     // Filter to numbers that have a messaging profile
     const numbers = (response.data || [])
-      .filter((n) => n.messaging_profile_id)
+      .filter((n) => {
+        if (!n.messaging_profile_id) return false;
+        if (showAll) return true;
+        // Only return numbers assigned to the logged-in user's messaging profile
+        return user?.messagingProfileId && n.messaging_profile_id === user.messagingProfileId;
+      })
       .map((n) => ({
         id: n.id,
         phone_number: n.phone_number,
@@ -646,16 +727,53 @@ router.post('/purchase-number', authenticate, async (req, res) => {
     const apiKey = await getOrgApiKey();
     if (!apiKey) return res.status(400).json({ message: 'No Telnyx API key configured.' });
 
-    const { phone_number, connection_id, messaging_profile_id } = req.body;
+    const { phone_number, connection_id, messaging_profile_id, for_agent } = req.body;
     if (!phone_number) return res.status(400).json({ message: 'phone_number is required' });
 
+    // Determine the target agent (admin can purchase for a specific agent)
+    const targetUsername = for_agent || req.user.username;
+    const targetUser = await User.findOne({ where: { username: targetUsername } });
+
     const body = { phone_numbers: [{ phone_number }] };
-    if (connection_id) body.connection_id = connection_id;
-    if (messaging_profile_id) body.messaging_profile_id = messaging_profile_id;
+    // Auto-assign voice app connection from target agent if not explicitly provided
+    if (connection_id) {
+      body.connection_id = connection_id;
+    } else if (targetUser?.appConnectionId) {
+      body.connection_id = targetUser.appConnectionId;
+    }
+    // Auto-assign messaging profile from target agent if not explicitly provided
+    if (messaging_profile_id) {
+      body.messaging_profile_id = messaging_profile_id;
+    } else if (targetUser?.messagingProfileId) {
+      body.messaging_profile_id = targetUser.messagingProfileId;
+    }
 
     const response = await axios.post('https://api.telnyx.com/v2/number_orders', body, {
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     });
+
+    // Also update via the messaging-specific endpoint (number_orders may not set it)
+    const orderedNumbers = response.data?.data?.phone_numbers || [];
+    const msgProfileId = messaging_profile_id || targetUser?.messagingProfileId;
+    if (msgProfileId && orderedNumbers.length > 0) {
+      setTimeout(async () => {
+        for (const ordered of orderedNumbers) {
+          const numId = ordered.id;
+          if (!numId) continue;
+          try {
+            await axios.patch(`https://api.telnyx.com/v2/phone_numbers/${numId}/messaging`, {
+              messaging_profile_id: msgProfileId,
+            }, {
+              headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+            });
+            console.log(`[Purchase] Auto-assigned messaging profile ${msgProfileId} to ${ordered.phone_number}`);
+          } catch (msgErr) {
+            console.error(`[Purchase] Failed to auto-assign messaging profile to ${ordered.phone_number}:`, msgErr.response?.data?.errors?.[0]?.detail || msgErr.message);
+          }
+        }
+      }, 3000);
+    }
+
     res.json(response.data);
   } catch (err) {
     console.error('Error purchasing number:', err.response?.data || err.message);
@@ -680,13 +798,15 @@ router.delete('/release-number/:numberId', authenticate, async (req, res) => {
 
 //===================== ASSIGN/UNASSIGN NUMBER TO VOICE APP =====================
 router.post('/assign-number', authenticate, async (req, res) => {
-  const { numberId } = req.body;
+  const { numberId, agentUsername } = req.body;
   if (!numberId) return res.status(400).json({ message: 'numberId is required' });
 
   try {
-    const user = await User.findOne({ where: { username: req.user.username } });
+    // Admin can assign to a specific agent; otherwise assign to self
+    const targetUsername = agentUsername || req.user.username;
+    const user = await User.findOne({ where: { username: targetUsername } });
     if (!user?.appConnectionId) {
-      return res.status(400).json({ message: 'Your Voice App is not provisioned. Ask an admin to configure the org API key.' });
+      return res.status(400).json({ message: `${agentUsername ? 'Agent' : 'Your'} Voice App is not provisioned. Ask an admin to configure the org API key.` });
     }
 
     const { getOrgTelnyxClient } = await import('../src/services/org-telnyx.js');
@@ -694,7 +814,7 @@ router.post('/assign-number', authenticate, async (req, res) => {
     await telnyx.phoneNumbers.update(numberId, {
       connection_id: user.appConnectionId,
     });
-    res.json({ message: 'Number assigned to your Voice App' });
+    res.json({ message: `Number assigned to ${agentUsername ? agentUsername + "'s" : 'your'} Voice App` });
   } catch (err) {
     console.error('Error assigning number:', err.raw?.errors?.[0]?.detail || err.message);
     res.status(err.status || 500).json({ message: err.raw?.errors?.[0]?.detail || 'Failed to assign number' });
@@ -715,6 +835,108 @@ router.post('/unassign-number', authenticate, async (req, res) => {
   } catch (err) {
     console.error('Error unassigning number:', err.raw?.errors?.[0]?.detail || err.message);
     res.status(err.status || 500).json({ message: err.raw?.errors?.[0]?.detail || 'Failed to unassign number' });
+  }
+});
+
+//===================== ASSIGN/UNASSIGN MESSAGING PROFILE =====================
+router.post('/assign-messaging-profile', authenticate, async (req, res) => {
+  const { numberId, profileId, agentUsername } = req.body;
+  if (!numberId) return res.status(400).json({ message: 'numberId is required' });
+
+  try {
+    // Determine the messaging profile ID to use
+    let messagingProfileId = profileId;
+
+    if (!messagingProfileId && agentUsername) {
+      // Admin assigning a specific agent's messaging profile
+      const targetUser = await User.findOne({ where: { username: agentUsername } });
+      if (!targetUser?.messagingProfileId) {
+        return res.status(400).json({ message: `Agent ${agentUsername} has no messaging profile provisioned.` });
+      }
+      messagingProfileId = targetUser.messagingProfileId;
+    }
+
+    if (!messagingProfileId) {
+      // Default to the requesting user's messaging profile
+      const user = await User.findOne({ where: { username: req.user.username } });
+      if (!user?.messagingProfileId) {
+        return res.status(400).json({ message: 'Your messaging profile is not provisioned. Ask an admin to configure the org API key.' });
+      }
+      messagingProfileId = user.messagingProfileId;
+    }
+
+    const apiKey = await getOrgApiKey();
+    if (!apiKey) return res.status(400).json({ message: 'No Telnyx API key configured.' });
+
+    // Use the dedicated messaging endpoint: PATCH /v2/phone_numbers/{id}/messaging
+    await axios.patch(`https://api.telnyx.com/v2/phone_numbers/${numberId}/messaging`, {
+      messaging_profile_id: messagingProfileId,
+    }, {
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    });
+
+    res.json({ message: 'Messaging profile assigned to number' });
+  } catch (err) {
+    console.error('Error assigning messaging profile:', err.response?.data || err.message);
+    res.status(err.response?.status || 500).json({ message: err.response?.data?.errors?.[0]?.detail || 'Failed to assign messaging profile' });
+  }
+});
+
+router.post('/unassign-messaging-profile', authenticate, async (req, res) => {
+  const { numberId } = req.body;
+  if (!numberId) return res.status(400).json({ message: 'numberId is required' });
+
+  try {
+    const apiKey = await getOrgApiKey();
+    if (!apiKey) return res.status(400).json({ message: 'No Telnyx API key configured.' });
+
+    // Use the dedicated messaging endpoint with null to unassign
+    await axios.patch(`https://api.telnyx.com/v2/phone_numbers/${numberId}/messaging`, {
+      messaging_profile_id: null,
+    }, {
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    });
+
+    res.json({ message: 'Messaging profile unassigned from number' });
+  } catch (err) {
+    console.error('Error unassigning messaging profile:', err.response?.data || err.message);
+    res.status(err.response?.status || 500).json({ message: err.response?.data?.errors?.[0]?.detail || 'Failed to unassign messaging profile' });
+  }
+});
+
+//===================== GENERAL NUMBER UPDATE =====================
+router.patch('/update-number', authenticate, async (req, res) => {
+  const { numberId, connection_id, tags, messaging_profile_id } = req.body;
+  if (!numberId) return res.status(400).json({ message: 'numberId is required' });
+
+  try {
+    const apiKey = await getOrgApiKey();
+    if (!apiKey) return res.status(400).json({ message: 'No Telnyx API key configured.' });
+
+    const updateBody = {};
+    if (connection_id !== undefined) updateBody.connection_id = connection_id;
+    if (tags !== undefined) updateBody.tags = tags;
+
+    // Update general phone number fields
+    if (Object.keys(updateBody).length > 0) {
+      await axios.patch(`https://api.telnyx.com/v2/phone_numbers/${numberId}`, updateBody, {
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // If messaging_profile_id is provided, update via the messaging-specific endpoint
+    if (messaging_profile_id !== undefined) {
+      await axios.patch(`https://api.telnyx.com/v2/phone_numbers/${numberId}/messaging`, {
+        messaging_profile_id,
+      }, {
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      });
+    }
+
+    res.json({ message: 'Number updated successfully' });
+  } catch (err) {
+    console.error('Error updating number:', err.response?.data || err.message);
+    res.status(err.response?.status || 500).json({ message: err.response?.data?.errors?.[0]?.detail || 'Failed to update number' });
   }
 });
 

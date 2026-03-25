@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
-import { useAppSelector } from '../../../src/store/hooks';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { useAppSelector, useAppDispatch } from '../../../src/store/hooks';
 import {
   useGetMyConversationsQuery,
   useGetMessagesQuery,
@@ -10,6 +10,17 @@ import {
   useGetMessagingNumbersQuery,
 } from '../../../src/store/api';
 import { validatePhoneNumber, formatPhoneDisplay, COUNTRY_CODES, toE164 } from '../../../src/lib/phone-utils';
+import { markConversationRead } from '../../../src/features/notifications/notificationSlice';
+
+// Normalize timestamps from various formats (SQLite, ISO, etc.)
+const parseDate = (ts) => {
+  if (!ts) return new Date();
+  // Handle SQLite format: 'YYYY-MM-DD HH:MM:SS' (no T or Z)
+  if (ts.includes(' ') && !ts.includes('T')) {
+    return new Date(ts.replace(' ', 'T') + 'Z');
+  }
+  return new Date(ts);
+};
 
 // Status indicator component (iMessage-style)
 function DeliveryStatus({ status }) {
@@ -36,7 +47,7 @@ function DeliveryStatus({ status }) {
 
 function formatTime(dateStr) {
   if (!dateStr) return '';
-  const d = new Date(dateStr);
+  const d = parseDate(dateStr);
   const now = new Date();
   const isToday = d.toDateString() === now.toDateString();
   if (isToday) {
@@ -46,16 +57,22 @@ function formatTime(dateStr) {
     d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
+function formatFullDate(dateStr) {
+  if (!dateStr) return '';
+  const d = parseDate(dateStr);
+  return d.toLocaleString([], { dateStyle: 'full', timeStyle: 'medium' });
+}
+
 // Check if we should show a date separator between messages
 function shouldShowDateSeparator(prev, curr) {
   if (!prev) return true;
-  const d1 = new Date(prev.createdAt).toDateString();
-  const d2 = new Date(curr.createdAt).toDateString();
+  const d1 = parseDate(prev.created_at || prev.createdAt).toDateString();
+  const d2 = parseDate(curr.created_at || curr.createdAt).toDateString();
   return d1 !== d2;
 }
 
 function DateSeparator({ date }) {
-  const d = new Date(date);
+  const d = parseDate(date);
   const now = new Date();
   const isToday = d.toDateString() === now.toDateString();
   const yesterday = new Date(now);
@@ -77,10 +94,13 @@ function DateSeparator({ date }) {
 }
 
 export default function SmsPage() {
+  const dispatch = useAppDispatch();
   const username = useAppSelector((state) => state.auth.username);
+  const unreadConversations = useAppSelector((state) => state.notifications.unreadConversations);
 
   const [selectedConversationId, setSelectedConversationId] = useState(null);
   const [selectedConversation, setSelectedConversation] = useState(null);
+  const [lightboxUrl, setLightboxUrl] = useState(null);
   const [messageText, setMessageText] = useState('');
   const [isComposeOpen, setIsComposeOpen] = useState(false);
   const [composeTo, setComposeTo] = useState('');
@@ -112,11 +132,11 @@ export default function SmsPage() {
   const [sendMessage, { isLoading: isSending }] = useSendMessageMutation();
 
   // Use messaging numbers first, fall back to tag-based numbers
-  const agentNumbers = messagingNumbersData?.data?.length
+  const agentNumbers = useMemo(() => messagingNumbersData?.data?.length
     ? messagingNumbersData.data.map((p) => p.phone_number)
     : phoneNumbersData?.data
       ? phoneNumbersData.data.map((p) => p.phone_number)
-      : [];
+      : [], [messagingNumbersData, phoneNumbersData]);
 
   useEffect(() => {
     if (agentNumbers.length > 0 && !composeFrom) {
@@ -157,6 +177,7 @@ export default function SmsPage() {
     setSelectedConversation(conversation);
     setMessageText('');
     setSendError('');
+    dispatch(markConversationRead(conversation.conversation_id));
   };
 
   const handleReply = async () => {
@@ -165,9 +186,8 @@ export default function SmsPage() {
     try {
       let mediaUrls = [];
       if (replyMedia.length > 0) {
-        const API_BASE = `https://${process.env.NEXT_PUBLIC_API_HOST}:${process.env.NEXT_PUBLIC_API_PORT}`;
         for (const m of replyMedia) {
-          const uploadRes = await fetch(`${API_BASE}/api/conversations/upload-media`, {
+          const uploadRes = await fetch(`/api/conversations/upload-media`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ data: m.preview, filename: m.file.name, content_type: m.file.type }),
@@ -199,6 +219,16 @@ export default function SmsPage() {
     }
   };
 
+  // Compute SHA-256 hash matching server-side conversation_id logic
+  const computeConversationId = async (from, to) => {
+    const sorted = [from, to].sort().join('');
+    const encoder = new TextEncoder();
+    const data = encoder.encode(sorted);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+  };
+
   const handleCompose = async () => {
     const fullNumber = toE164(composeTo.trim(), composeCountry);
     const validation = validatePhoneNumber(fullNumber);
@@ -213,9 +243,8 @@ export default function SmsPage() {
       // Upload media files first
       let mediaUrls = [];
       if (composeMedia.length > 0) {
-        const API_BASE = `https://${process.env.NEXT_PUBLIC_API_HOST}:${process.env.NEXT_PUBLIC_API_PORT}`;
         for (const m of composeMedia) {
-          const uploadRes = await fetch(`${API_BASE}/api/conversations/upload-media`, {
+          const uploadRes = await fetch('/api/conversations/upload-media', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ data: m.preview, filename: m.file.name, content_type: m.file.type }),
@@ -231,6 +260,16 @@ export default function SmsPage() {
         agent: username,
         MediaUrls: mediaUrls,
       }).unwrap();
+
+      // Auto-open the conversation after sending
+      const convId = await computeConversationId(composeFrom, validation.formatted);
+      setSelectedConversationId(convId);
+      setSelectedConversation({
+        conversation_id: convId,
+        from_number: composeFrom,
+        to_number: validation.formatted,
+      });
+
       setComposeTo('');
       setComposeBody('');
       setComposeMedia([]);
@@ -294,6 +333,7 @@ export default function SmsPage() {
             ) : (
               conversations.map((conv) => {
                 const isSelected = selectedConversationId === conv.conversation_id;
+                const isUnread = unreadConversations.includes(conv.conversation_id);
                 return (
                   <button
                     key={conv.conversation_id}
@@ -308,13 +348,18 @@ export default function SmsPage() {
                       <span className="text-sm font-medium text-gray-900">
                         {formatPhoneDisplay(conv.to_number) || conv.to_number}
                       </span>
-                      {conv.updatedAt && (
-                        <span className="text-[10px] text-gray-400">
-                          {formatTime(conv.updatedAt)}
-                        </span>
-                      )}
+                      <div className="flex items-center gap-1.5">
+                        {(conv.updated_at || conv.updatedAt) && (
+                          <span className={`text-[10px] ${isUnread ? 'text-telnyx-green font-medium' : 'text-gray-400'}`}>
+                            {formatTime(conv.updated_at || conv.updatedAt)}
+                          </span>
+                        )}
+                        {isUnread && (
+                          <span className="flex h-2 w-2 rounded-full bg-telnyx-green"></span>
+                        )}
+                      </div>
                     </div>
-                    <p className="mt-0.5 truncate text-xs text-gray-500">
+                    <p className={`mt-0.5 truncate text-xs ${isUnread ? 'font-medium text-gray-700' : 'text-gray-500'}`}>
                       {conv.last_message || 'No messages'}
                     </p>
                   </button>
@@ -367,7 +412,7 @@ export default function SmsPage() {
 
                       return (
                         <div key={msg.id || index}>
-                          {showDate && <DateSeparator date={msg.createdAt} />}
+                          {showDate && <DateSeparator date={msg.created_at || msg.createdAt} />}
                           <div className={`flex ${isOutbound ? 'justify-end' : 'justify-start'}`}>
                             <div className={`max-w-[70%] ${isLastInGroup ? 'mb-2' : 'mb-0.5'}`}>
                               <div
@@ -378,6 +423,7 @@ export default function SmsPage() {
                                       : 'bg-telnyx-green text-white'
                                     : 'bg-white text-gray-900 shadow-sm border border-gray-100'
                                 }`}
+                                title={`${formatFullDate(msg.created_at || msg.createdAt)}${msg.status ? ' — ' + msg.status : ''}`}
                                 style={isOutbound ? {
                                   borderBottomRightRadius: isLastInGroup ? '4px' : undefined,
                                 } : {
@@ -394,7 +440,7 @@ export default function SmsPage() {
                                             const url = m.url || m;
                                             const ct = m.content_type || '';
                                             if (ct.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp)$/i.test(url)) {
-                                              return <img key={mi} src={url} alt="" className="max-w-[240px] rounded-lg cursor-pointer" onClick={() => window.open(url, '_blank')} />;
+                                              return <img key={mi} src={url} alt="" className="max-w-[240px] rounded-lg cursor-pointer" onClick={() => setLightboxUrl(url)} />;
                                             }
                                             return (
                                               <a key={mi} href={url} target="_blank" rel="noopener noreferrer" className="text-xs underline">
@@ -412,7 +458,7 @@ export default function SmsPage() {
                               {/* Timestamp + delivery status */}
                               {isLastInGroup && (
                                 <div className={`mt-0.5 flex items-center gap-1 px-1 ${isOutbound ? 'justify-end' : 'justify-start'}`}>
-                                  <span className="text-[10px] text-gray-400">{formatTime(msg.createdAt)}</span>
+                                  <span className="text-[10px] text-gray-400">{formatTime(msg.created_at || msg.createdAt)}</span>
                                   {isOutbound && <DeliveryStatus status={msg.status} />}
                                   {msg.status === 'failed' && isOutbound && (
                                     <button
@@ -496,6 +542,124 @@ export default function SmsPage() {
                 </div>
               </div>
             </>
+          ) : isComposeOpen ? (
+            /* Inline compose view (iMessage-style) */
+            <>
+              <div className="flex items-center justify-between border-b border-gray-200 bg-gray-950 px-4 py-3 rounded-tr-card">
+                <h2 className="text-sm font-semibold text-white">New Message</h2>
+                <button
+                  onClick={() => { setIsComposeOpen(false); setComposeTo(''); setComposeBody(''); setComposeMedia([]); setComposeError(''); }}
+                  className="text-xs text-gray-400 hover:text-white transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto bg-gray-50 px-4 py-4">
+                <div className="space-y-3">
+                  {/* From */}
+                  <div>
+                    <label className="mb-1 block text-[10px] font-medium text-gray-400 uppercase tracking-wider">From</label>
+                    <select
+                      value={composeFrom}
+                      onChange={(e) => setComposeFrom(e.target.value)}
+                      className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:border-telnyx-green focus:outline-none focus:ring-1 focus:ring-telnyx-green"
+                    >
+                      {agentNumbers.map((number, idx) => (
+                        <option key={idx} value={number}>{formatPhoneDisplay(number)}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {/* To */}
+                  <div>
+                    <label className="mb-1 block text-[10px] font-medium text-gray-400 uppercase tracking-wider">To</label>
+                    <div className="flex gap-2">
+                      <select
+                        value={composeCountry}
+                        onChange={(e) => { setComposeCountry(e.target.value); setComposeError(''); }}
+                        className="w-20 rounded-xl border border-gray-200 bg-white px-2 py-2 text-sm text-gray-900 focus:border-telnyx-green focus:outline-none focus:ring-1 focus:ring-telnyx-green"
+                      >
+                        {COUNTRY_CODES.map((c) => (
+                          <option key={c.code} value={c.code}>{c.label}</option>
+                        ))}
+                      </select>
+                      <input
+                        type="tel"
+                        autoFocus
+                        value={composeTo}
+                        onChange={(e) => { setComposeTo(e.target.value); setComposeError(''); }}
+                        placeholder="Phone number"
+                        className={`flex-1 rounded-xl border bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-1 ${
+                          composeError ? 'border-red-300 focus:border-red-400 focus:ring-red-200' : 'border-gray-200 focus:border-telnyx-green focus:ring-telnyx-green'
+                        }`}
+                      />
+                    </div>
+                    {composeError && <p className="mt-1 text-xs text-red-500">{composeError}</p>}
+                  </div>
+                  {/* Media previews */}
+                  {composeMedia.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {composeMedia.map((m, i) => (
+                        <div key={i} className="relative">
+                          <img src={m.preview} alt="" className="h-16 w-16 rounded-lg object-cover border border-gray-200" />
+                          <button onClick={() => setComposeMedia((prev) => prev.filter((_, j) => j !== i))}
+                            className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[8px] text-white">
+                            &times;
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Compose input area */}
+              <div className="border-t border-gray-200 bg-white px-4 py-3">
+                <div className="flex items-end gap-2">
+                  <button
+                    onClick={() => composeFileRef.current?.click()}
+                    className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full text-gray-400 hover:text-telnyx-green transition-colors"
+                  >
+                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.112 2.13" />
+                    </svg>
+                  </button>
+                  <input ref={composeFileRef} type="file" accept="image/*" multiple className="hidden"
+                    onChange={(e) => { handleFileSelect(e.target.files, setComposeMedia); e.target.value = ''; }} />
+                  <textarea
+                    value={composeBody}
+                    onChange={(e) => setComposeBody(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey && (composeBody.trim() || composeMedia.length > 0) && composeTo.trim()) {
+                        e.preventDefault();
+                        handleCompose();
+                      }
+                    }}
+                    placeholder="Type your message..."
+                    rows={1}
+                    className="flex-1 resize-none rounded-2xl border border-gray-300 px-4 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:border-telnyx-green focus:outline-none focus:ring-1 focus:ring-telnyx-green"
+                    style={{ maxHeight: '120px' }}
+                    onInput={(e) => {
+                      e.target.style.height = 'auto';
+                      e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+                    }}
+                  />
+                  <button
+                    onClick={handleCompose}
+                    disabled={isSending || (!composeBody.trim() && composeMedia.length === 0) || !composeTo.trim()}
+                    className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-telnyx-green text-white transition-all hover:bg-telnyx-green/90 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {isSending ? (
+                      <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent"></div>
+                    ) : (
+                      <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 19V5m0 0l-7 7m7-7l7 7" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </>
           ) : (
             <div className="flex flex-1 items-center justify-center bg-gray-50">
               <div className="text-center">
@@ -526,139 +690,26 @@ export default function SmsPage() {
         </div>
       </div>
 
-      {/* Compose Dialog */}
-      {isComposeOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="w-full max-w-md rounded-card bg-white shadow-2xl">
-            <div className="border-b border-gray-200 px-6 py-4 rounded-t-card">
-              <h3 className="text-lg font-semibold text-gray-900">
-                New Message
-              </h3>
-            </div>
-
-            <div className="space-y-4 px-6 py-4">
-              {/* From number dropdown */}
-              <div>
-                <label className="mb-1 block text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  From
-                </label>
-                <select
-                  value={composeFrom}
-                  onChange={(e) => setComposeFrom(e.target.value)}
-                  className="w-full rounded-btn border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-telnyx-green focus:outline-none focus:ring-1 focus:ring-telnyx-green"
-                >
-                  {agentNumbers.map((number, idx) => (
-                    <option key={idx} value={number}>
-                      {formatPhoneDisplay(number)}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* To number with country code */}
-              <div>
-                <label className="mb-1 block text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  To
-                </label>
-                <div className="flex gap-2">
-                  <select
-                    value={composeCountry}
-                    onChange={(e) => { setComposeCountry(e.target.value); setComposeError(''); }}
-                    className="w-24 rounded-btn border border-gray-300 px-2 py-2 text-sm text-gray-900 focus:border-telnyx-green focus:outline-none focus:ring-1 focus:ring-telnyx-green"
-                  >
-                    {COUNTRY_CODES.map((c) => (
-                      <option key={c.code} value={c.code}>
-                        {c.label}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    type="tel"
-                    autoFocus
-                    value={composeTo}
-                    onChange={(e) => { setComposeTo(e.target.value); setComposeError(''); }}
-                    placeholder="Phone number"
-                    className={`flex-1 rounded-btn border px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-1 ${
-                      composeError
-                        ? 'border-red-300 focus:border-red-400 focus:ring-red-200'
-                        : 'border-gray-300 focus:border-telnyx-green focus:ring-telnyx-green'
-                    }`}
-                  />
-                </div>
-                {composeError && (
-                  <p className="mt-1 text-xs text-red-500">{composeError}</p>
-                )}
-              </div>
-
-              {/* Message body */}
-              <div>
-                <label className="mb-1 block text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Message
-                </label>
-                <textarea
-                  value={composeBody}
-                  onChange={(e) => setComposeBody(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey && (composeBody.trim() || composeMedia.length > 0) && composeTo.trim()) {
-                      e.preventDefault();
-                      handleCompose();
-                    }
-                  }}
-                  placeholder="Type your message..."
-                  rows={4}
-                  className="w-full resize-none rounded-btn border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-telnyx-green focus:outline-none focus:ring-1 focus:ring-telnyx-green"
-                />
-                {/* Attachment previews */}
-                {composeMedia.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {composeMedia.map((m, i) => (
-                      <div key={i} className="relative">
-                        <img src={m.preview} alt="" className="h-16 w-16 rounded-lg object-cover border border-gray-200" />
-                        <button onClick={() => setComposeMedia((prev) => prev.filter((_, j) => j !== i))}
-                          className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[8px] text-white">
-                          &times;
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <button
-                  type="button"
-                  onClick={() => composeFileRef.current?.click()}
-                  className="mt-2 flex items-center gap-1 text-xs text-gray-400 hover:text-telnyx-green"
-                >
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.112 2.13" />
-                  </svg>
-                  Attach image
-                </button>
-                <input ref={composeFileRef} type="file" accept="image/*" multiple className="hidden"
-                  onChange={(e) => { handleFileSelect(e.target.files, setComposeMedia); e.target.value = ''; }} />
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-3 border-t border-gray-200 px-6 py-4 rounded-b-card">
-              <button
-                onClick={() => {
-                  setIsComposeOpen(false);
-                  setComposeTo('');
-                  setComposeBody('');
-                  setComposeMedia([]);
-                  setComposeError('');
-                }}
-                className="rounded-btn border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleCompose}
-                disabled={isSending || (!composeBody.trim() && composeMedia.length === 0) || !composeTo.trim()}
-                className="rounded-btn bg-telnyx-green px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-telnyx-green/90 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {isSending ? 'Sending...' : composeMedia.length > 0 ? 'Send MMS' : 'Send'}
-              </button>
-            </div>
-          </div>
+      {/* Image lightbox modal */}
+      {lightboxUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+          onClick={() => setLightboxUrl(null)}
+        >
+          <button
+            onClick={() => setLightboxUrl(null)}
+            className="absolute right-4 top-4 flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20 transition-colors"
+          >
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+          <img
+            src={lightboxUrl}
+            alt=""
+            className="max-h-[85vh] max-w-[90vw] rounded-lg object-contain shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
         </div>
       )}
     </div>

@@ -6,7 +6,7 @@ import { useAppDispatch } from '../../src/store/hooks';
 import { login } from '../../src/features/auth/authSlice';
 
 const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
-const API_BASE = `https://${process.env.NEXT_PUBLIC_API_HOST || ''}:${process.env.NEXT_PUBLIC_API_PORT || '443'}`;
+// Use relative URLs (no API_BASE needed)
 
 export default function GoogleSignIn({ onError }) {
   const dispatch = useAppDispatch();
@@ -15,7 +15,7 @@ export default function GoogleSignIn({ onError }) {
 
   const handleCredentialResponse = useCallback(async (response) => {
     try {
-      const res = await fetch(`${API_BASE}/api/users/google-auth`, {
+      const res = await fetch(`/api/users/google-auth`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ credential: response.credential }),
@@ -57,7 +57,7 @@ export default function GoogleSignIn({ onError }) {
           type: 'standard',
           theme: 'outline',
           size: 'large',
-          width: '100%',
+          width: 400,
           text: 'signin_with',
           shape: 'rectangular',
           logo_alignment: 'left',
