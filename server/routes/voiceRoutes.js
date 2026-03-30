@@ -290,7 +290,7 @@ router.post('/outbound', express.json(), async (req, res) => {
     // Agent answered — bridge the caller leg to the agent leg
     try {
       await telnyx.calls.actions.bridge(callControlId_Bridge, {
-        call_control_id_to_bridge_with: callControl, park_after_unbridge: 'self'
+        call_control_id_to_bridge_with: callControl, park_after_unbridge: 'self', hold_after_unbridge: false
       });
       // Confirm bridge_uuid (may already be set from dial response)
       await Voice.update(
@@ -677,7 +677,7 @@ router.post('/outbound-webrtc-bridge', express.json(), async (req, res) => {
     broadcast('OutboundCCID', callControl);
     try {
       await telnyx.calls.actions.bridge(callControl, {
-        call_control_id_to_bridge_with: callControlId_Bridge, park_after_unbridge: 'self'
+        call_control_id_to_bridge_with: callControlId_Bridge, park_after_unbridge: 'self', hold_after_unbridge: false
       });
       await Voice.update(
         { bridge_uuid: callControl },
