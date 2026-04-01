@@ -16,8 +16,7 @@ const router = express.Router();
 // ── Shared helpers for agent status management ──
 
 async function setAgentBusy(agentIdentifier) {
-  const agent = await User.findOne({ where: { sipUsername: agentIdentifier } })
-    || await User.findOne({ where: { username: agentIdentifier } });
+  const agent = await User.findOne({ where: { [Op.or]: [{ sipUsername: agentIdentifier }, { username: agentIdentifier }] } });
   if (!agent || agent.status === 'busy') return;
   agent.status = 'busy';
   await agent.save();
@@ -30,8 +29,7 @@ async function setAgentBusy(agentIdentifier) {
 }
 
 async function setAgentOnline(agentIdentifier) {
-  const agent = await User.findOne({ where: { sipUsername: agentIdentifier } })
-    || await User.findOne({ where: { username: agentIdentifier } });
+  const agent = await User.findOne({ where: { [Op.or]: [{ sipUsername: agentIdentifier }, { username: agentIdentifier }] } });
   if (!agent || agent.status !== 'busy') return;
   agent.status = 'online';
   await agent.save();
@@ -158,7 +156,7 @@ async function handleCallBridged(data, callControlId) {
   const voiceRecord = await Voice.findOne({
     where: { [Op.or]: [{ queue_uuid: callControlId }, { bridge_uuid: callControlId }] },
   });
-  if (voiceRecord?.accept_agent) {
+  if (voiceRecord?.accept_agent && !voiceRecord?.transfer_agent) {
     await setAgentBusy(voiceRecord.accept_agent);
   }
 }
@@ -182,7 +180,7 @@ async function handleCallHangup(data, callControlId) {
     let telnyx;
     try { telnyx = await getOrgTelnyxClient(); } catch { /* ignore */ }
     if (telnyx) {
-      await safeHangup(telnyx, voiceRecord.bridge_uuid, 'webhook-caller-hangup');
+      // await safeHangup(telnyx, voiceRecord.bridge_uuid, 'webhook-caller-hangup');
     }
   }
 
@@ -313,11 +311,23 @@ router.post('/outbound', express.json(), async (req, res) => {
       routeToNextAgent(callControlId_Bridge, declinedAgent).catch(err =>
         console.error('[outbound] Error routing to next agent:', err.message)
       );
-    } else if (hangup_source === 'callee' && clientState !== Buffer.from('Warm Transfer').toString('base64')) {
-      // Callee (remote party) hung up — hang up the caller leg and restore agent
+    } else if (clientState !== Buffer.from('Warm Transfer').toString('base64')) {
+      // Agent or remote party ended the call — restore agent and hang up parked PSTN leg
       const voiceRecord = await Voice.findOne({ where: { queue_uuid: callControlId_Bridge } });
       if (voiceRecord?.accept_agent) await setAgentOnline(voiceRecord.accept_agent);
-      await safeHangup(telnyx, callControlId_Bridge, 'outbound');
+      const supervisorActive = !!voiceRecord?.conference_id;
+      const transferInProgress = !!voiceRecord?.transfer_agent;
+      if (!supervisorActive && !transferInProgress) {
+        await safeHangup(telnyx, callControlId_Bridge, 'outbound');
+      } else if (supervisorActive) {
+        // Supervisor is still on the call — null accept_agent so supervisor-leg
+        // handler knows the original agent has already dropped when it fires
+        await Voice.update(
+          { accept_agent: null },
+          { where: { queue_uuid: callControlId_Bridge } }
+        ).catch(() => {});
+      }
+      // transferInProgress: PSTN leg is being handed off — leave it alone
     }
   }
   res.status(200).send('OK');
@@ -337,11 +347,15 @@ router.post('/transfer', express.json(), async (req, res) => {
 
   if (outboundCCID && outboundCCID.length > 0) {
     transferId = outboundCCID;
+    // Mark the voice record so the outbound-webrtc hangup handler doesn't kill the PSTN leg
+    await Voice.update({ transfer_agent: targetSipUsername }, { where: { bridge_uuid: outboundCCID } }).catch(() => {});
   } else if (callControlId) {
     isCallControlIdUsed = true;
     const callData = await Voice.findOne({ where: { bridge_uuid: callControlId } });
     if (callData) {
       transferId = callData.queue_uuid;
+      // Mark the voice record so the /outbound hangup handler doesn't kill the PSTN leg
+      await Voice.update({ transfer_agent: targetSipUsername }, { where: { queue_uuid: transferId } }).catch(() => {});
     } else {
       return res.status(404).send('Call data not found');
     }
@@ -385,13 +399,27 @@ router.post('/transfer-call', express.json(), async (req, res) => {
     }
 
     if (event_type === 'call.answered' && !isCallControlIdUsed) {
-      await safeHangup(telnyx, transferId, 'transfer-answered');
+      // await safeHangup(telnyx, transferId, 'transfer-answered');
       broadcast('OutboundCCID', null);
     }
 
-    if (event_type === 'call.hangup' && hangup_source === 'callee' && isCallControlIdUsed) {
+    // Agent B hung up or PSTN parked after Agent B disconnected (inbound and outbound)
+    // Exclude agent-declined cases (480/486) which are handled by the re-enqueue block below
+    const agentDeclined = sipcode === '480' || sipcode === '486';
+    if (!agentDeclined && (
+      (event_type === 'call.hangup' && hangup_source === 'callee') ||
+      event_type === 'call.parked'
+    )) {
+      console.log(`[transfer-call] Transfer ended (${event_type}), hanging up PSTN leg ${callControlId_Bridge}`);
+      await safeHangup(telnyx, callControlId_Bridge, 'transfer-end');
+      const voiceRecord = await Voice.findOne({
+        where: { [Op.or]: [{ queue_uuid: callControlId_Bridge }, { bridge_uuid: callControlId_Bridge }] }
+      });
+      if (voiceRecord?.accept_agent) await setAgentOnline(voiceRecord.accept_agent);
+      await Voice.destroy({
+        where: { [Op.or]: [{ queue_uuid: callControlId_Bridge }, { bridge_uuid: callControlId_Bridge }] }
+      }).catch(() => {});
       broadcast('OutboundCCID', null);
-      await safeHangup(telnyx, transferId, 'transfer-callee-hangup');
     }
 
     // Agent unavailable — re-enqueue
@@ -414,7 +442,7 @@ router.post('/transfer-call', express.json(), async (req, res) => {
               audio_url: cached.url,
             });
           }
-          await safeHangup(telnyx, transferId, 'transfer-requeue');
+          // await safeHangup(telnyx, transferId, 'transfer-requeue');
         }
       } catch (error) {
         console.error('Error re-enqueuing call:', error.message);
@@ -462,9 +490,9 @@ router.post('/warm-transfer', express.json(), async (req, res) => {
     // Get a valid from number — fall back to the Telnyx number from the Voice record
     let fromNumber = callerId?.number;
     if (!fromNumber || fromNumber === 'Unknown') {
-      const voiceRecord = await Voice.findOne({ where: { bridge_uuid: pstnCallControlId } })
-        || await Voice.findOne({ where: { queue_uuid: pstnCallControlId } })
-        || await Voice.findOne({ where: { bridge_uuid: callControlId } });
+      const voiceRecord = await Voice.findOne({
+        where: { [Op.or]: [{ bridge_uuid: pstnCallControlId }, { queue_uuid: pstnCallControlId }, { bridge_uuid: callControlId }] }
+      });
       fromNumber = voiceRecord?.telnyx_number || voiceRecord?.destination_number;
     }
 
@@ -487,17 +515,13 @@ router.post('/warm-transfer', express.json(), async (req, res) => {
     const thirdPartyCallControlId = dialResponse?.data?.call_control_id;
     console.log(`[warm-transfer] Target agent dialed, call_control_id: ${thirdPartyCallControlId}`);
 
-    if (callControlId) {
-      await Voice.update(
-        { conference_id: thirdPartyCallControlId },
-        { where: { bridge_uuid: callControlId } }
-      );
-    } else if (outboundCCID) {
-      await Voice.update(
-        { conference_id: thirdPartyCallControlId },
-        { where: { bridge_uuid: outboundCCID } }
-      );
-    }
+    // pstnCallControlId is always the PSTN leg:
+    //   inbound → queue_uuid = PSTN leg
+    //   outbound → bridge_uuid = PSTN leg
+    await Voice.update(
+      { conference_id: thirdPartyCallControlId },
+      { where: { [Op.or]: [{ queue_uuid: pstnCallControlId }, { bridge_uuid: pstnCallControlId }] } }
+    );
 
     res.json({
       success: true,
@@ -536,9 +560,37 @@ router.post('/supervisor-leg', express.json(), async (req, res) => {
     if (sipcode === '480' || sipcode === '486' || sipcode === '487' || hangupCause === 'timeout') {
       console.log(`[supervisor-leg] Supervisor declined/unavailable: ${reason}`);
       broadcast('WARM_TRANSFER_FAILED', { reason: `Agent declined or unavailable (${reason})` });
+      // Clear conference_id so agent hangup will correctly tear down the call
+      await Voice.update(
+        { conference_id: null },
+        { where: { [Op.or]: [{ queue_uuid: pstnCCID }, { bridge_uuid: pstnCCID }] } }
+      ).catch(() => {});
     } else {
-      // Supervisor hung up after being in the call — transfer completed or agent left
+      // Supervisor hung up after being in the call
       console.log(`[supervisor-leg] Supervisor leg ended: ${reason}`);
+      const voiceRecord = await Voice.findOne({
+        where: { [Op.or]: [{ queue_uuid: pstnCCID }, { bridge_uuid: pstnCCID }] }
+      });
+      const agentAlreadyDropped = !voiceRecord?.accept_agent;
+      if (agentAlreadyDropped) {
+        // Original agent had already left — hang up the parked PSTN leg and clean up
+        try {
+          const telnyx = await getOrgTelnyxClient();
+          await safeHangup(telnyx, pstnCCID, 'supervisor-leg-end');
+        } catch (err) {
+          console.error('[supervisor-leg] Failed to hang up PSTN leg:', err.message);
+        }
+        await Voice.destroy({
+          where: { [Op.or]: [{ queue_uuid: pstnCCID }, { bridge_uuid: pstnCCID }] }
+        }).catch(() => {});
+      } else {
+        // Original agent is still on the call — just clear conference_id and let call continue
+        await Voice.update(
+          { conference_id: null },
+          { where: { [Op.or]: [{ queue_uuid: pstnCCID }, { bridge_uuid: pstnCCID }] } }
+        ).catch(() => {});
+        console.log(`[supervisor-leg] Agent still active, call continues`);
+      }
       broadcast('WARM_TRANSFER_COMPLETED', { callControlId: bridgeCCID });
     }
   }
@@ -591,7 +643,7 @@ router.post('/outbound-webrtc', express.json(), async (req, res) => {
         : null;
       console.log(`[Outbound-WebRTC] initiated: sipConn=${sipConnectionId}, agent=${initiatingAgent?.username || 'NOT FOUND'}, voiceApp=${initiatingAgent?.appConnectionId || 'NONE'}`);
 
-      Voice.create({
+      await Voice.create({
         telnyx_number: data.payload.from,
         destination_number: data.payload.to,
         direction: data.payload.direction,
@@ -617,7 +669,7 @@ router.post('/outbound-webrtc', express.json(), async (req, res) => {
 
       if (!callingAgent?.appConnectionId) {
         console.error(`[Outbound-WebRTC] No Voice App for agent ${voiceRecord?.accept_agent}`);
-        return;
+        return res.status(200).send('OK');
       }
 
       // Use the from number stored at call.initiated (user's selected caller ID)
@@ -640,14 +692,27 @@ router.post('/outbound-webrtc', express.json(), async (req, res) => {
     // Agent hung up from WebRTC — hang up the parked PSTN leg too
     if (event_type === 'call.hangup') {
       const voiceRecord = await Voice.findOne({ where: { queue_uuid: callControlId } });
-      // Hang up the PSTN leg (parked due to park_after_unbridge)
-      if (voiceRecord?.bridge_uuid) {
+      // If record is already gone (bridge handler cleaned up first), skip to avoid
+      // broadcasting OutboundCCID=null during a subsequent call
+      if (!voiceRecord) return res.status(200).send('OK');
+      console.log(`[outbound-webrtc] call.hangup — bridge_uuid=${voiceRecord.bridge_uuid}, conference_id=${voiceRecord.conference_id}`);
+      const supervisorActive = !!voiceRecord.conference_id;
+      const transferInProgress = !!voiceRecord.transfer_agent;
+      // Only hang up the parked PSTN leg if no supervisor and no transfer in progress
+      if (voiceRecord.bridge_uuid && !supervisorActive && !transferInProgress) {
         await safeHangup(telnyx, voiceRecord.bridge_uuid, 'outbound-webrtc');
       }
-      // Restore agent status
-      if (voiceRecord?.accept_agent) await setAgentOnline(voiceRecord.accept_agent);
-      // Clean up
-      if (voiceRecord) await Voice.destroy({ where: { queue_uuid: callControlId } }).catch(() => {});
+      if (supervisorActive) {
+        // Null accept_agent first so supervisor-leg handler sees the agent as already dropped,
+        // then restore agent status
+        await Voice.update({ accept_agent: null }, { where: { queue_uuid: callControlId } }).catch(() => {});
+        if (voiceRecord.accept_agent) await setAgentOnline(voiceRecord.accept_agent);
+      } else {
+        if (voiceRecord.accept_agent) await setAgentOnline(voiceRecord.accept_agent);
+        if (!transferInProgress) {
+          await Voice.destroy({ where: { queue_uuid: callControlId } }).catch(() => {});
+        }
+      }
       broadcast('OutboundCCID', null);
     }
   } catch (error) {
@@ -693,13 +758,15 @@ router.post('/outbound-webrtc-bridge', express.json(), async (req, res) => {
   }
 
   if (event_type === 'call.hangup' && hangup_source === 'callee' && clientState !== Buffer.from('Transfer').toString('base64')) {
-    // Remote party hung up — hang up agent WebRTC leg, restore agent status
+    // Remote party hung up — restore agent status and clean up
     const voiceRecord = await Voice.findOne({ where: { queue_uuid: callControlId_Bridge } });
-    if (voiceRecord?.accept_agent) await setAgentOnline(voiceRecord.accept_agent);
-    await safeHangup(telnyx, callControlId_Bridge, 'outbound-webrtc-bridge');
+    // If record is already gone (outbound-webrtc handler cleaned up first), skip to avoid
+    // broadcasting OutboundCCID=null during a subsequent call
+    if (!voiceRecord) return res.status(200).send('OK');
+    if (voiceRecord.accept_agent) await setAgentOnline(voiceRecord.accept_agent);
+    // await safeHangup(telnyx, callControlId_Bridge, 'outbound-webrtc-bridge');
     broadcast('OutboundCCID', null);
-    // Clean up voice record
-    if (voiceRecord) await Voice.destroy({ where: { queue_uuid: callControlId_Bridge } }).catch(() => {});
+    await Voice.destroy({ where: { queue_uuid: callControlId_Bridge } }).catch(() => {});
     return res.status(200).send('OK');
   }
 

@@ -99,6 +99,10 @@ const authSlice = createSlice({
       if (token) {
         try {
           const decoded = jwtDecode(token);
+          if (decoded.exp && decoded.exp * 1000 < Date.now()) {
+            localStorage.removeItem('token');
+            return;
+          }
           state.token = token;
           state.username = decoded.username || null;
           state.role = decoded.role || 'agent';
