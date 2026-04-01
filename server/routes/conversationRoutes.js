@@ -24,6 +24,7 @@ function isValidE164(phone) {
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { randomUUID } from 'crypto';
 import axios from 'axios';
+import heicConvert from 'heic-convert';
 
 const UPLOAD_DIR = new URL('../../uploads', import.meta.url).pathname;
 if (!existsSync(UPLOAD_DIR)) mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -52,12 +53,24 @@ router.post('/upload-media', async (req, res) => {
 
   try {
     const webhookBase = await getWebhookBaseUrl();
-    const ext = (filename || 'file').split('.').pop() || 'bin';
-    const name = `${randomUUID()}.${ext}`;
+    const ext = (filename || 'file').split('.').pop().toLowerCase() || 'bin';
     const base64 = data.replace(/^data:[^;]+;base64,/, '');
-    writeFileSync(`${UPLOAD_DIR}/${name}`, base64, 'base64');
+    let fileBuffer = Buffer.from(base64, 'base64');
+    let finalExt = ext;
+    let finalContentType = content_type;
+
+    // Convert HEIC/HEIF to JPEG — carriers don't support HEIC for MMS
+    if (ext === 'heic' || ext === 'heif' || content_type === 'image/heic' || content_type === 'image/heif') {
+      console.log(`[Upload] Converting ${ext.toUpperCase()} to JPEG`);
+      fileBuffer = Buffer.from(await heicConvert({ buffer: fileBuffer, format: 'JPEG', quality: 0.85 }));
+      finalExt = 'jpg';
+      finalContentType = 'image/jpeg';
+    }
+
+    const name = `${randomUUID()}.${finalExt}`;
+    writeFileSync(`${UPLOAD_DIR}/${name}`, fileBuffer);
     const url = `${webhookBase}/api/conversations/media/${name}`;
-    res.json({ url, filename: name, content_type });
+    res.json({ url, filename: name, content_type: finalContentType });
   } catch (err) {
     console.error('Upload error:', err.message);
     res.status(500).json({ error: 'Upload failed' });

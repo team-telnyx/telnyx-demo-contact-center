@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import Image from 'next/image';
+
 
 export default function AuthLayout({ children }) {
   const [darkMode, setDarkMode] = useState(false);
@@ -42,7 +42,7 @@ export default function AuthLayout({ children }) {
 
       {/* Logo */}
       <div className="mb-6">
-        <Image src="/telnyx_logo.png" alt="Telnyx" width={180} height={48} className="h-12 w-auto" priority />
+        <img src="/telnyx_logo.png" alt="Telnyx" style={{ height: '3rem', width: 'auto' }} />
       </div>
 
       {/* Card */}

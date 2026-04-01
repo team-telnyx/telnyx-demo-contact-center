@@ -2,7 +2,7 @@ import { io } from 'socket.io-client';
 import { connected, disconnected, reconnecting, error } from '../features/socket/socketSlice';
 import { setOutboundCCID, setWebrtcOutboundCCID, setCallState, setIsHeld, resetCall, setWarmTransfer } from '../features/call/callSlice';
 import { incrementCallBadge, incrementSmsBadge, markConversationUnread } from '../features/notifications/notificationSlice';
-import { updateAgentStatus } from '../features/auth/authSlice';
+import { updateAgentStatus, logout } from '../features/auth/authSlice';
 import { api } from './api';
 
 // Use configured API URL for socket connection, fall back to same origin (reverse proxy)
@@ -76,6 +76,13 @@ function connectSocket(storeApi, token) {
   });
 
   socket.on('connect_error', (err) => {
+    if (err.message === 'Invalid token' || err.message === 'jwt expired') {
+      console.warn('Socket auth failed, logging out:', err.message);
+      socket.disconnect();
+      socket = null;
+      storeApi.dispatch(logout());
+      return;
+    }
     console.error('Socket connection error:', err.message);
     storeApi.dispatch(error(err.message));
   });

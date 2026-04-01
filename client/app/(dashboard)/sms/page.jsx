@@ -285,10 +285,13 @@ export default function SmsPage() {
   const handleRetry = async (msg) => {
     if (!selectedConversation) return;
     try {
+      const media = msg.media ? (typeof msg.media === 'string' ? JSON.parse(msg.media) : msg.media) : [];
+      const mediaUrls = media.map(m => m.url).filter(Boolean);
       await sendMessage({
         From: selectedConversation.from_number,
-        Text: msg.text_body,
+        Text: msg.text_body || '',
         To: selectedConversation.to_number,
+        MediaUrls: mediaUrls,
         agent: username,
       }).unwrap();
     } catch (err) {

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
-import Image from 'next/image';
+
 import { useAppSelector, useAppDispatch } from '../../src/store/hooks';
 import { logout, setAgentStatus, fetchProfile } from '../../src/features/auth/authSlice';
 import { clearCallBadge, clearSmsBadge } from '../../src/features/notifications/notificationSlice';
@@ -187,7 +187,7 @@ export default function DashboardLayout({ children }) {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
               </svg>
             </button>
-            <Image src="/telnyx_logo.png" alt="Telnyx" width={120} height={32} className="h-8 w-auto" priority />
+            <img src="/telnyx_logo.png" alt="Telnyx" style={{ height: '2rem', width: 'auto' }} />
           </div>
 
           {/* Right: WebRTC client + dark mode + status + avatar + logout */}
