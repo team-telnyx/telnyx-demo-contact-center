@@ -16,6 +16,7 @@ import {
   setIsHeld,
   setClientError,
   resetCall,
+  setTranscriptActive,
 } from '../../src/features/call/callSlice';
 import { callStore } from '../../src/lib/call-store';
 
@@ -193,7 +194,21 @@ export default function TelnyxRTCWrapper({ children }) {
               dispatch(setCallControlId(call.options.telnyxCallControlId));
               dispatch(setToNumber(call.options.destinationNumber));
               dispatch(setFromNumber(call.options.remoteCallerNumber));
+              dispatch(setTranscriptActive(true));
               callStore.setCall(call);
+
+              // Start transcription on outbound calls
+              const ccid = call.options.telnyxCallControlId;
+              if (call.direction === 'outbound' && ccid) {
+                fetch('/api/voice/transcription/start', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${localStorage.getItem('token')}`,
+                  },
+                  body: JSON.stringify({ callControlId: ccid }),
+                }).catch(err => console.error('[transcription] Failed to start:', err));
+              }
 
               // Attach remote audio
               if (audioRef.current && call.remoteStream) {
@@ -201,6 +216,20 @@ export default function TelnyxRTCWrapper({ children }) {
               }
             } else if (state === 'HANGUP' || state === 'DESTROY') {
               stopRingtone();
+
+              // Stop transcription if active on outbound call
+              const ccid = call?.options?.telnyxCallControlId;
+              if (ccid) {
+                fetch('/api/voice/transcription/stop', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${localStorage.getItem('token')}`,
+                  },
+                  body: JSON.stringify({ callControlId: ccid }),
+                }).catch(() => {});
+              }
+
               dispatch(resetCall());
               dispatch(setIsMuted(false));
               dispatch(setIsHeld(false));
