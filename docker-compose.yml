@@ -1,0 +1,126 @@
+# ─── Telnyx Contact Center ─── Docker Compose ───
+# Usage:
+#   docker compose up -d              → Start everything
+#   docker compose logs -f app        → Follow app logs
+#   docker compose exec app npx sequelize db:migrate  → Run migrations
+
+services:
+  # ── PostgreSQL ──────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: contact_center
+      POSTGRES_USER: cc
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-cc_dev_2024}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Bind only to localhost so Postgres isn't internet-reachable.
+    # If you need to connect from outside the host, use SSH tunnelling.
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cc -d contact_center"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Redis ────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Contact Center App (Express + Next.js) ─────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-3001}:3001"
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgresql://cc:${DB_PASSWORD:-cc_dev_2024}@db:5432/contact_center
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-24h}
+      TELNYX_API_KEY: ${TELNYX_API_KEY:?TELNYX_API_KEY is required}
+      TELNYX_PUBLIC_KEY: ${TELNYX_PUBLIC_KEY:-}
+      TELNYX_APP_CONNECTION_ID: ${TELNYX_APP_CONNECTION_ID:?TELNYX_APP_CONNECTION_ID is required}
+      TELNYX_SIP_CONNECTION_ID: ${TELNYX_SIP_CONNECTION_ID:?TELNYX_SIP_CONNECTION_ID is required}
+      TELNYX_SIP_USERNAME: ${TELNYX_SIP_USERNAME:?TELNYX_SIP_USERNAME is required}
+      TELNYX_SIP_PASSWORD: ${TELNYX_SIP_PASSWORD:?TELNYX_SIP_PASSWORD is required}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+      PUBLIC_URL: ${PUBLIC_URL:?PUBLIC_URL is required}
+      COMPANY_NAME: ${COMPANY_NAME:-Telnyx Contact Center}
+      TELNYX_STT_ENABLED: ${TELNYX_STT_ENABLED:-true}
+      TELNYX_AI_ENABLED: ${TELNYX_AI_ENABLED:-true}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── Go Webhook Handler ──────────────────────────────────────────────
+  # High-throughput, low-latency handler for Telnyx Call Control webhooks.
+  # Receives webhooks → verifies Ed25519 signatures → updates Redis state →
+  # forwards to Node.js app server → publishes real-time events via Redis pub/sub.
+  webhook-handler:
+    build:
+      context: ./services/webhook-handler
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "8090:8090"
+    environment:
+      - PORT=8090
+      - NODE_SERVER_URL=http://app:3001
+      - REDIS_URL=redis://redis:6379
+      - TELNYX_PUBLIC_KEY=${TELNYX_PUBLIC_KEY:-}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8090/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # ── nginx reverse proxy (SSL termination) ──────────────────────────
+  # Uncomment + add your certs to ./nginx/ to enable HTTPS
+  #
+  # nginx:
+  #   image: nginx:alpine
+  #   restart: unless-stopped
+  #   depends_on:
+  #     app:
+  #       condition: service_healthy
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+  #     - ./nginx/certs:/etc/nginx/certs:ro
+
+volumes:
+  pgdata:
+  redis-data:
