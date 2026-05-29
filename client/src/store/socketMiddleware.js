@@ -1,6 +1,6 @@
 import { io } from 'socket.io-client';
 import { connected, disconnected, reconnecting, error } from '../features/socket/socketSlice';
-import { setOutboundCCID, setWebrtcOutboundCCID, setCallState, setIsHeld, resetCall, setWarmTransfer } from '../features/call/callSlice';
+import { setOutboundCCID, setWebrtcOutboundCCID, setCallState, setIsHeld, resetCall, setWarmTransfer, addTranscriptEntry, setTranscriptActive, clearTranscript } from '../features/call/callSlice';
 import { incrementCallBadge, incrementSmsBadge, markConversationUnread } from '../features/notifications/notificationSlice';
 import { updateAgentStatus, logout } from '../features/auth/authSlice';
 import { api } from './api';
@@ -107,6 +107,7 @@ function connectSocket(storeApi, token) {
 
   socket.on('CALL_ANSWERED', () => {
     storeApi.dispatch(setCallState('ACTIVE'));
+    storeApi.dispatch(setTranscriptActive(true));
   });
 
   socket.on('CALL_ENDED', () => {
@@ -131,6 +132,15 @@ function connectSocket(storeApi, token) {
 
   socket.on('WARM_TRANSFER_COMPLETED', () => {
     storeApi.dispatch(setWarmTransfer({ active: false, thirdPartyCallControlId: null }));
+  });
+
+  // Live transcription events
+  socket.on('TRANSCRIPT_UPDATE', (data) => {
+    storeApi.dispatch(addTranscriptEntry(data));
+  });
+
+  socket.on('TRANSCRIPT_ENDED', () => {
+    storeApi.dispatch(setTranscriptActive(false));
   });
 
   socket.on('AGENT_STATUS_CHANGED', (data) => {

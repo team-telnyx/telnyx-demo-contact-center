@@ -22,6 +22,8 @@ const initialState = {
   fromNumber: null,
   callerNumber: '',
   clientError: null,
+  transcript: [],
+  transcriptActive: false,
 };
 
 const callSlice = createSlice({
@@ -81,6 +83,36 @@ const callSlice = createSlice({
         clientStatus: state.clientStatus,
         callerNumber: state.callerNumber,
       });
+      state.transcript = [];
+      state.transcriptActive = false;
+    },
+    addTranscriptEntry(state, action) {
+      const { callControlId, transcript, isInterim, confidence, timestamp } = action.payload;
+      // For interim results, update the last interim entry for this call
+      if (isInterim && state.transcript.length > 0) {
+        const lastEntry = state.transcript[state.transcript.length - 1];
+        if (lastEntry.isInterim && lastEntry.callControlId === callControlId) {
+          lastEntry.transcript = transcript;
+          lastEntry.confidence = confidence;
+          lastEntry.timestamp = timestamp;
+          return;
+        }
+      }
+      // Final result: convert any pending interim to final, then append
+      if (!isInterim && state.transcript.length > 0) {
+        const lastEntry = state.transcript[state.transcript.length - 1];
+        if (lastEntry.isInterim && lastEntry.callControlId === callControlId) {
+          lastEntry.isInterim = false;
+        }
+      }
+      state.transcript.push({ callControlId, transcript, isInterim, confidence, timestamp });
+    },
+    setTranscriptActive(state, action) {
+      state.transcriptActive = action.payload;
+    },
+    clearTranscript(state) {
+      state.transcript = [];
+      state.transcriptActive = false;
     },
     setOutboundCCID(state, action) {
       state.outboundCCID = action.payload;
@@ -125,6 +157,9 @@ export const {
   setWebrtcOutboundCCID,
   setConference,
   setWarmTransfer,
+  addTranscriptEntry,
+  setTranscriptActive,
+  clearTranscript,
 } = callSlice.actions;
 
 export default callSlice.reducer;

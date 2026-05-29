@@ -12,6 +12,7 @@ const envSchema = z.object({
   DB_NAME: z.string().min(1),
   GOOGLE_CLIENT_ID: z.string().optional(),
   CORS_ORIGINS: z.string().default('*').transform(s => s.split(',')),
+  SERVER_PORT: z.coerce.number().default(3000),
   SESSION_SECRET: z.string().min(32).default(() => crypto.randomBytes(32).toString('hex')),
 });
 

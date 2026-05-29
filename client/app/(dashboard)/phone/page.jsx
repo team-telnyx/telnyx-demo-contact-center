@@ -13,6 +13,7 @@ import {
 } from '../../../src/store/api';
 import { formatPhoneDisplay } from '../../../src/lib/phone-utils';
 import WaveformPlayer from '../../components/WaveformPlayer';
+import { clearTranscript, setTranscriptActive } from '../../../src/features/call/callSlice';
 
 export default function PhonePage() {
   const { username } = useAppSelector((state) => state.auth);
@@ -24,6 +25,8 @@ export default function PhonePage() {
     callControlId,
     warmTransferActive,
     warmTransferError,
+    transcript,
+    transcriptActive,
   } = useAppSelector((state) => state.call);
 
   const { data: agents, refetch: refetchAgents } = useGetAgentsQuery(undefined, {
@@ -50,8 +53,22 @@ export default function PhonePage() {
   const [dialingAgent, setDialingAgent] = useState(null);
   const [activePlayer, setActivePlayer] = useState(null);
   const [showRecFilters, setShowRecFilters] = useState(false);
+  const [showTranscript, setShowTranscript] = useState(true);
+  const transcriptEndRef = useState(null);
 
-  // Sort recordings client-side
+  // Auto-scroll transcript to bottom
+  useEffect(() => {
+    if (showTranscript && transcriptEndRef[0]) {
+      transcriptEndRef[0].scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [transcript, showTranscript, transcriptEndRef]);
+
+  // Mark transcript active when first entry arrives
+  useEffect(() => {
+    if (transcript.length > 0 && !transcriptActive) {
+      // dispatch handled below in JSX
+    }
+  }, [transcript.length, transcriptActive]);
   const recordings = [...(recordingsData?.data || [])].sort((a, b) => {
     let aVal, bVal;
     if (recSort.key === 'created_at') {
@@ -179,6 +196,60 @@ export default function PhonePage() {
       {(transferError || warmTransferError) && (
         <div className="mb-4 rounded-btn bg-red-50 border border-red-200 px-4 py-2 text-sm text-red-600">
           {transferError || warmTransferError}
+        </div>
+      )}
+
+      {/* Live Transcript Panel */}
+      {isActive && (
+        <div className="mb-6 rounded-card border border-gray-200 bg-white shadow-sm hover-lift">
+          <div className="rounded-t-card bg-black px-4 py-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <h2 className="font-semibold text-white">Live Transcript</h2>
+                {transcriptActive && (
+                  <span className="flex items-center gap-1 rounded-full bg-telnyx-green/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-telnyx-green">
+                    <span className="h-1.5 w-1.5 rounded-full bg-telnyx-green animate-pulse" />
+                    Live
+                  </span>
+                )}
+                {transcript.length > 0 && (
+                  <span className="text-xs text-gray-400">{transcript.filter(t => !t.isInterim).length} segments</span>
+                )}
+              </div>
+              <button
+                onClick={() => setShowTranscript(!showTranscript)}
+                className="rounded-btn px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
+              >
+                {showTranscript ? 'Hide' : 'Show'}
+              </button>
+            </div>
+          </div>
+          {showTranscript && (
+            <div className="max-h-64 overflow-y-auto">
+              {transcript.length === 0 ? (
+                <div className="px-4 py-6 text-center text-sm text-gray-400">
+                  Waiting for transcript...
+                </div>
+              ) : (
+                <div className="divide-y">
+                  {transcript.map((entry, i) => (
+                    <div
+                      key={i}
+                      className={`px-4 py-2 text-sm leading-relaxed ${
+                        entry.isInterim ? 'text-gray-400 italic' : 'text-gray-700'
+                      }`}
+                    >
+                      <span className="mr-2 text-[10px] font-mono text-gray-300">
+                        {new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </span>
+                      {entry.transcript}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div ref={(el) => { transcriptEndRef[0] = el; }} />
+            </div>
+          )}
         </div>
       )}
 
